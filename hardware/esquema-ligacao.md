@@ -47,10 +47,10 @@ Para buzzer, sirene ou carga de maior corrente, utilizar transistor, relé ou m�
 | Item | Quantidade | Observação |
 |---|---:|---|
 | Arduino Mega 2560 | 1 | Controlador principal |
-| Botão tipo push button | 3 | Azul, vermelho e reset |
+| Botão tipo push button | 3 | Azul, verde e reset |
 | LED azul | 1 | Indicador da Equipe Azul |
-| LED vermelho | 1 | Indicador da Equipe Vermelha |
-| LED verde | 1 | Sistema pronto |
+| LED verde | 1 | Indicador da Equipe Verde |
+| LED de sistema pronto | 1 | Indicação de rodada liberada |
 | Resistor 220 ohms | 3 | Para os LEDs |
 | Buzzer | 1 | Sinalização sonora |
 | Protoboard ou placa de montagem | 1 | Montagem inicial |
