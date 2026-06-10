@@ -17,7 +17,7 @@ A proposta é permitir que o professor conduza perguntas, respostas, repasses, p
 
 A primeira versão do projeto deverá contemplar:
 
-- Duas equipes: Azul e Vermelha.
+- Duas equipes: Azul e Verde.
 - Botões de resposta para cada equipe.
 - LEDs indicadores de equipe.
 - Buzzer para sinalização sonora.
