@@ -1,7 +1,7 @@
 /*
   Projeto: Passa ou Repassa
   Arquivo: firmware/passa_ou_repassa/passa_ou_repassa.ino
-  Versão: 0.2.0
+  Versão: 0.3.0
   Plataforma: Arduino Mega 2560
   Linguagem: C++ / Arduino
   Display: LCD 20x4 I2C
@@ -11,19 +11,12 @@
   travamento da primeira equipe que pressionar, sinalização por LEDs,
   buzzer, reset de rodada, pontuação manual e placar no display LCD 20x4.
 
-  Recursos implementados:
-  - Botão de resposta da equipe Azul.
-  - Botão de resposta da equipe Vermelha.
-  - Travamento da rodada pela primeira equipe que pressionar.
-  - LEDs indicadores da equipe que travou.
-  - LED de status/pronto.
-  - Buzzer de alerta da rodada.
-  - Reset curto para liberar nova rodada.
-  - Reset pressionado por 5 segundos para zerar placar.
-  - Botões + e - para ajuste de pontuação.
-  - Duas entradas digitais para seleção de pontuação: Azul e Vermelha.
-  - Pontuação exibida no LCD 20x4.
-  - Comandos de teste pelo Monitor Serial.
+  Alterações da versão 0.3.0:
+  - Chave de pontuação Azul movida para D28.
+  - Chave de pontuação Verde movida para D25.
+  - Equipe Vermelha renomeada para Verde.
+  - Adicionado bloqueio de pontuação para evitar múltiplos pontos em um único clique.
+  - Buzzer no D8 com sons de inicialização, rodada, pontuação, erro e reset.
 
   Autor: Geraldo Fernandes
 */
@@ -52,11 +45,14 @@ constexpr int PONTO_PADRAO = 1;
 constexpr int PLACAR_MIN = -99;
 constexpr int PLACAR_MAX = 999;
 
-constexpr unsigned long DEBOUNCE_MS = 45;
+// Aumentado para reduzir efeitos de repique mecânico.
+constexpr unsigned long DEBOUNCE_MS = 80;
+
 constexpr unsigned long LCD_REFRESH_MS = 250;
-constexpr unsigned long ALERTA_RODADA_MS = 1200;
-constexpr unsigned long ALERTA_INTERVALO_MS = 120;
 constexpr unsigned long RESET_ZERA_PLACAR_MS = 5000;
+
+// Bloqueio adicional para evitar que um único clique some/subtraia mais de um ponto.
+constexpr unsigned long BLOQUEIO_PONTUACAO_MS = 450;
 
 // true  = buzzer passivo, usa tone().
 // false = buzzer ativo 5 V, usa HIGH/LOW.
@@ -67,19 +63,19 @@ constexpr bool BUZZER_PASSIVO = true;
 // =====================================================
 
 constexpr uint8_t PINO_BOTAO_AZUL = 22;
-constexpr uint8_t PINO_BOTAO_VERMELHO = 23;
+constexpr uint8_t PINO_BOTAO_VERDE = 23;
 constexpr uint8_t PINO_BOTAO_RESET = 24;
 
-// Chave seletora A/V corrigida para duas entradas digitais independentes.
-constexpr uint8_t PINO_CHAVE_PONTUACAO_AZUL = 25;
-constexpr uint8_t PINO_BOTAO_MAIS_PONTOS = 26;
-constexpr uint8_t PINO_BOTAO_MENOS_PONTOS = 27;
-constexpr uint8_t PINO_CHAVE_PONTUACAO_VERMELHA = 28;
+// Chave de pontuação A/V em duas entradas digitais independentes.
+constexpr uint8_t PINO_CHAVE_PONTUACAO_AZUL = 28;   // D28
+constexpr uint8_t PINO_BOTAO_MAIS_PONTOS = 26;      // D26
+constexpr uint8_t PINO_BOTAO_MENOS_PONTOS = 27;     // D27
+constexpr uint8_t PINO_CHAVE_PONTUACAO_VERDE = 25;  // D25
 
 constexpr uint8_t PINO_LED_AZUL = 30;
-constexpr uint8_t PINO_LED_VERMELHO = 31;
+constexpr uint8_t PINO_LED_VERDE = 31;
 constexpr uint8_t PINO_LED_PRONTO = 32;
-constexpr uint8_t PINO_BUZZER = 8;
+constexpr uint8_t PINO_BUZZER = 8;                  // D8
 
 // LCD I2C no Arduino Mega 2560:
 // SDA = pino 20
@@ -92,32 +88,76 @@ constexpr uint8_t PINO_BUZZER = 8;
 enum Equipe : uint8_t {
   EQUIPE_NENHUMA = 0,
   EQUIPE_AZUL = 1,
-  EQUIPE_VERMELHA = 2
+  EQUIPE_VERDE = 2
 };
 
-enum BuzzerModo : uint8_t {
-  BUZZER_DESLIGADO = 0,
-  BUZZER_BIP_CURTO = 1,
-  BUZZER_ALERTA_RODADA = 2
+struct NotaBuzzer {
+  uint16_t frequenciaHz;
+  uint16_t duracaoMs;
+  uint16_t pausaMs;
 };
 
 int placarAzul = 0;
-int placarVermelho = 0;
+int placarVerde = 0;
 
 Equipe equipeTravada = EQUIPE_NENHUMA;
 
 bool lcdPrecisaAtualizar = true;
 unsigned long ultimaAtualizacaoLCD = 0;
 
-BuzzerModo buzzerModo = BUZZER_DESLIGADO;
-unsigned long buzzerFim = 0;
-unsigned long buzzerUltimaAlternancia = 0;
+const NotaBuzzer* sequenciaAtual = nullptr;
+uint8_t totalNotasSequencia = 0;
+uint8_t indiceNotaSequencia = 0;
 bool buzzerLigado = false;
+bool buzzerEmPausa = false;
+unsigned long proximaTrocaBuzzer = 0;
 
 bool resetLongoExecutado = false;
+unsigned long ultimaAcaoPontuacao = 0;
 
 char mensagemTemporaria[21] = "";
 unsigned long mensagemTemporariaAte = 0;
+
+// =====================================================
+// SONS DO JOGO
+// =====================================================
+
+const NotaBuzzer SOM_INICIALIZACAO[] = {
+  {900, 90, 30},
+  {1300, 90, 30},
+  {1800, 130, 0}
+};
+
+const NotaBuzzer SOM_TRAVOU_RODADA[] = {
+  {1600, 100, 60},
+  {1600, 100, 60},
+  {2200, 160, 0}
+};
+
+const NotaBuzzer SOM_PONTO_ADICIONADO[] = {
+  {1800, 80, 40},
+  {2400, 110, 0}
+};
+
+const NotaBuzzer SOM_PONTO_REMOVIDO[] = {
+  {900, 90, 40},
+  {500, 130, 0}
+};
+
+const NotaBuzzer SOM_RESET[] = {
+  {1200, 80, 40},
+  {800, 120, 0}
+};
+
+const NotaBuzzer SOM_ERRO[] = {
+  {300, 180, 0}
+};
+
+const NotaBuzzer SOM_EMPATE[] = {
+  {700, 100, 40},
+  {700, 100, 40},
+  {700, 100, 0}
+};
 
 // =====================================================
 // DECLARAÇÕES ANTECIPADAS
@@ -208,7 +248,7 @@ private:
 };
 
 BotaoDebounce botaoAzul;
-BotaoDebounce botaoVermelho;
+BotaoDebounce botaoVerde;
 BotaoDebounce botaoReset;
 BotaoDebounce botaoMaisPontos;
 BotaoDebounce botaoMenosPontos;
@@ -237,43 +277,62 @@ void buzzerOff() {
   digitalWrite(PINO_BUZZER, LOW);
 }
 
-void iniciarBipCurto(uint16_t frequenciaHz, unsigned long duracaoMs) {
-  buzzerModo = BUZZER_BIP_CURTO;
-  buzzerFim = millis() + duracaoMs;
-  buzzerOn(frequenciaHz);
+void iniciarSom(const NotaBuzzer* sequencia, uint8_t totalNotas) {
+  if (sequencia == nullptr || totalNotas == 0) {
+    return;
+  }
+
+  sequenciaAtual = sequencia;
+  totalNotasSequencia = totalNotas;
+  indiceNotaSequencia = 0;
+  buzzerEmPausa = false;
+
+  buzzerOn(sequenciaAtual[indiceNotaSequencia].frequenciaHz);
+  proximaTrocaBuzzer = millis() + sequenciaAtual[indiceNotaSequencia].duracaoMs;
 }
 
-void iniciarAlertaRodada() {
-  buzzerModo = BUZZER_ALERTA_RODADA;
-  buzzerFim = millis() + ALERTA_RODADA_MS;
-  buzzerUltimaAlternancia = 0;
-  buzzerLigado = false;
+void pararSom() {
+  buzzerOff();
+  sequenciaAtual = nullptr;
+  totalNotasSequencia = 0;
+  indiceNotaSequencia = 0;
+  buzzerEmPausa = false;
+  proximaTrocaBuzzer = 0;
 }
 
 void atualizarBuzzer() {
+  if (sequenciaAtual == nullptr) {
+    return;
+  }
+
   const unsigned long agora = millis();
 
-  if (buzzerModo == BUZZER_DESLIGADO) {
+  if (agora < proximaTrocaBuzzer) {
     return;
   }
 
-  if (agora >= buzzerFim) {
+  if (!buzzerEmPausa) {
     buzzerOff();
-    buzzerModo = BUZZER_DESLIGADO;
-    return;
-  }
 
-  if (buzzerModo == BUZZER_ALERTA_RODADA) {
-    if (agora - buzzerUltimaAlternancia >= ALERTA_INTERVALO_MS) {
-      buzzerUltimaAlternancia = agora;
+    const uint16_t pausaAtual = sequenciaAtual[indiceNotaSequencia].pausaMs;
 
-      if (buzzerLigado) {
-        buzzerOff();
-      } else {
-        buzzerOn(1600);
-      }
+    if (pausaAtual > 0) {
+      buzzerEmPausa = true;
+      proximaTrocaBuzzer = agora + pausaAtual;
+      return;
     }
   }
+
+  indiceNotaSequencia++;
+
+  if (indiceNotaSequencia >= totalNotasSequencia) {
+    pararSom();
+    return;
+  }
+
+  buzzerEmPausa = false;
+  buzzerOn(sequenciaAtual[indiceNotaSequencia].frequenciaHz);
+  proximaTrocaBuzzer = agora + sequenciaAtual[indiceNotaSequencia].duracaoMs;
 }
 
 // =====================================================
@@ -316,21 +375,21 @@ void desenharLCD() {
 
   imprimirLinhaLCD(0, "PASSA OU REPASSA");
 
-  snprintf(linha, sizeof(linha), "AZUL:%3d VERM:%3d", placarAzul, placarVermelho);
+  snprintf(linha, sizeof(linha), "AZUL:%3d VERDE:%3d", placarAzul, placarVerde);
   imprimirLinhaLCD(1, linha);
 
   if (millis() < mensagemTemporariaAte) {
     imprimirLinhaLCD(2, mensagemTemporaria);
   } else if (equipeTravada == EQUIPE_AZUL) {
     imprimirLinhaLCD(2, "TRAVOU: AZUL");
-  } else if (equipeTravada == EQUIPE_VERMELHA) {
-    imprimirLinhaLCD(2, "TRAVOU: VERMELHA");
+  } else if (equipeTravada == EQUIPE_VERDE) {
+    imprimirLinhaLCD(2, "TRAVOU: VERDE");
   } else {
     imprimirLinhaLCD(2, "AGUARDANDO...");
   }
 
   if (equipeTravada == EQUIPE_NENHUMA) {
-    imprimirLinhaLCD(3, "Aperte Azul/Verm.");
+    imprimirLinhaLCD(3, "Aperte Azul/Verde");
   } else {
     imprimirLinhaLCD(3, "Reset libera rodada");
   }
@@ -348,8 +407,8 @@ const char* nomeEquipe(Equipe equipe) {
     case EQUIPE_AZUL:
       return "AZUL";
 
-    case EQUIPE_VERMELHA:
-      return "VERMELHA";
+    case EQUIPE_VERDE:
+      return "VERDE";
 
     default:
       return "NENHUMA";
@@ -370,19 +429,19 @@ int limitarPlacar(int valor) {
 
 Equipe equipeSelecionadaParaPontuar() {
   const bool azulSelecionado = digitalRead(PINO_CHAVE_PONTUACAO_AZUL) == LOW;
-  const bool vermelhaSelecionada = digitalRead(PINO_CHAVE_PONTUACAO_VERMELHA) == LOW;
+  const bool verdeSelecionado = digitalRead(PINO_CHAVE_PONTUACAO_VERDE) == LOW;
 
-  if (azulSelecionado && !vermelhaSelecionada) {
+  if (azulSelecionado && !verdeSelecionado) {
     return EQUIPE_AZUL;
   }
 
-  if (vermelhaSelecionada && !azulSelecionado) {
-    return EQUIPE_VERMELHA;
+  if (verdeSelecionado && !azulSelecionado) {
+    return EQUIPE_VERDE;
   }
 
   // Atalho operacional:
   // Se nenhuma chave estiver selecionada, pontua a equipe que travou a rodada.
-  if (!azulSelecionado && !vermelhaSelecionada && equipeTravada != EQUIPE_NENHUMA) {
+  if (!azulSelecionado && !verdeSelecionado && equipeTravada != EQUIPE_NENHUMA) {
     return equipeTravada;
   }
 
@@ -391,7 +450,7 @@ Equipe equipeSelecionadaParaPontuar() {
 
 void atualizarSaidas() {
   digitalWrite(PINO_LED_AZUL, equipeTravada == EQUIPE_AZUL ? HIGH : LOW);
-  digitalWrite(PINO_LED_VERMELHO, equipeTravada == EQUIPE_VERMELHA ? HIGH : LOW);
+  digitalWrite(PINO_LED_VERDE, equipeTravada == EQUIPE_VERDE ? HIGH : LOW);
 }
 
 void atualizarLedPronto() {
@@ -407,9 +466,9 @@ void atualizarLedPronto() {
 
 void resetarRodada() {
   equipeTravada = EQUIPE_NENHUMA;
-  buzzerOff();
-  buzzerModo = BUZZER_DESLIGADO;
+  pararSom();
   atualizarSaidas();
+  iniciarSom(SOM_RESET, sizeof(SOM_RESET) / sizeof(SOM_RESET[0]));
   mostrarMensagemTemporaria("RODADA LIBERADA", 1000);
 
   Serial.println(F("[RESET] Rodada liberada."));
@@ -417,7 +476,7 @@ void resetarRodada() {
 
 void zerarPlacar() {
   placarAzul = 0;
-  placarVermelho = 0;
+  placarVerde = 0;
   mostrarMensagemTemporaria("PLACAR ZERADO", 1200);
 
   Serial.println(F("[PLACAR] Placar zerado."));
@@ -425,10 +484,10 @@ void zerarPlacar() {
 
 void zerarPlacarERodada() {
   equipeTravada = EQUIPE_NENHUMA;
-  buzzerOff();
-  buzzerModo = BUZZER_DESLIGADO;
+  pararSom();
   atualizarSaidas();
   zerarPlacar();
+  iniciarSom(SOM_RESET, sizeof(SOM_RESET) / sizeof(SOM_RESET[0]));
 }
 
 void travarRodada(Equipe equipe) {
@@ -438,7 +497,7 @@ void travarRodada(Equipe equipe) {
 
   equipeTravada = equipe;
   atualizarSaidas();
-  iniciarAlertaRodada();
+  iniciarSom(SOM_TRAVOU_RODADA, sizeof(SOM_TRAVOU_RODADA) / sizeof(SOM_TRAVOU_RODADA[0]));
   solicitarAtualizacaoLCD();
 
   Serial.print(F("[RODADA] Travou equipe: "));
@@ -448,16 +507,21 @@ void travarRodada(Equipe equipe) {
 void alterarPlacar(Equipe equipe, int delta) {
   if (equipe == EQUIPE_AZUL) {
     placarAzul = limitarPlacar(placarAzul + delta);
-  } else if (equipe == EQUIPE_VERMELHA) {
-    placarVermelho = limitarPlacar(placarVermelho + delta);
+  } else if (equipe == EQUIPE_VERDE) {
+    placarVerde = limitarPlacar(placarVerde + delta);
   } else {
-    iniciarBipCurto(350, 180);
+    iniciarSom(SOM_ERRO, sizeof(SOM_ERRO) / sizeof(SOM_ERRO[0]));
     mostrarMensagemTemporaria("SELECIONE EQUIPE", 1200);
     Serial.println(F("[ERRO] Nenhuma equipe selecionada para pontuar."));
     return;
   }
 
-  iniciarBipCurto(delta > 0 ? 2200 : 700, 90);
+  if (delta > 0) {
+    iniciarSom(SOM_PONTO_ADICIONADO, sizeof(SOM_PONTO_ADICIONADO) / sizeof(SOM_PONTO_ADICIONADO[0]));
+  } else {
+    iniciarSom(SOM_PONTO_REMOVIDO, sizeof(SOM_PONTO_REMOVIDO) / sizeof(SOM_PONTO_REMOVIDO[0]));
+  }
+
   solicitarAtualizacaoLCD();
 
   Serial.print(F("[PLACAR] "));
@@ -476,12 +540,12 @@ void imprimirAjudaSerial() {
   Serial.println();
   Serial.println(F("=== PASSA OU REPASSA - COMANDOS SERIAL ==="));
   Serial.println(F("a  -> simula botao da equipe AZUL"));
-  Serial.println(F("v  -> simula botao da equipe VERMELHA"));
+  Serial.println(F("v  -> simula botao da equipe VERDE"));
   Serial.println(F("r  -> reset/libera rodada"));
   Serial.println(F("1  -> AZUL +1"));
   Serial.println(F("2  -> AZUL -1"));
-  Serial.println(F("3  -> VERMELHA +1"));
-  Serial.println(F("4  -> VERMELHA -1"));
+  Serial.println(F("3  -> VERDE +1"));
+  Serial.println(F("4  -> VERDE -1"));
   Serial.println(F("c  -> zera placar"));
   Serial.println(F("s  -> mostra status"));
   Serial.println(F("?  -> ajuda"));
@@ -491,8 +555,8 @@ void imprimirAjudaSerial() {
 void imprimirStatusSerial() {
   Serial.print(F("[STATUS] Azul: "));
   Serial.print(placarAzul);
-  Serial.print(F(" | Vermelha: "));
-  Serial.print(placarVermelho);
+  Serial.print(F(" | Verde: "));
+  Serial.print(placarVerde);
   Serial.print(F(" | Rodada: "));
   Serial.println(nomeEquipe(equipeTravada));
 }
@@ -509,7 +573,7 @@ void processarSerial() {
 
       case 'v':
       case 'V':
-        travarRodada(EQUIPE_VERMELHA);
+        travarRodada(EQUIPE_VERDE);
         break;
 
       case 'r':
@@ -526,11 +590,11 @@ void processarSerial() {
         break;
 
       case '3':
-        alterarPlacar(EQUIPE_VERMELHA, PONTO_PADRAO);
+        alterarPlacar(EQUIPE_VERDE, PONTO_PADRAO);
         break;
 
       case '4':
-        alterarPlacar(EQUIPE_VERMELHA, -PONTO_PADRAO);
+        alterarPlacar(EQUIPE_VERDE, -PONTO_PADRAO);
         break;
 
       case 'c':
@@ -559,7 +623,7 @@ void processarSerial() {
 
 void atualizarBotoes() {
   botaoAzul.update();
-  botaoVermelho.update();
+  botaoVerde.update();
   botaoReset.update();
   botaoMaisPontos.update();
   botaoMenosPontos.update();
@@ -567,30 +631,53 @@ void atualizarBotoes() {
 
 void processarBotoesResposta() {
   const bool azulPressionado = botaoAzul.pressed();
-  const bool vermelhoPressionado = botaoVermelho.pressed();
+  const bool verdePressionado = botaoVerde.pressed();
 
   if (equipeTravada != EQUIPE_NENHUMA) {
     return;
   }
 
-  if (azulPressionado && !vermelhoPressionado) {
+  if (azulPressionado && !verdePressionado) {
     travarRodada(EQUIPE_AZUL);
-  } else if (vermelhoPressionado && !azulPressionado) {
-    travarRodada(EQUIPE_VERMELHA);
-  } else if (azulPressionado && vermelhoPressionado) {
+  } else if (verdePressionado && !azulPressionado) {
+    travarRodada(EQUIPE_VERDE);
+  } else if (azulPressionado && verdePressionado) {
     mostrarMensagemTemporaria("EMPATE - REPETIR", 1200);
-    iniciarBipCurto(500, 250);
+    iniciarSom(SOM_EMPATE, sizeof(SOM_EMPATE) / sizeof(SOM_EMPATE[0]));
     Serial.println(F("[RODADA] Pressionamento simultaneo. Repetir rodada."));
   }
 }
 
+bool pontuacaoLiberada() {
+  return (millis() - ultimaAcaoPontuacao) >= BLOQUEIO_PONTUACAO_MS;
+}
+
+void registrarBloqueioPontuacao() {
+  ultimaAcaoPontuacao = millis();
+}
+
 void processarBotoesPontuacao() {
-  if (botaoMaisPontos.pressed()) {
-    alterarPlacar(equipeSelecionadaParaPontuar(), PONTO_PADRAO);
+  const bool maisPressionado = botaoMaisPontos.pressed();
+  const bool menosPressionado = botaoMenosPontos.pressed();
+
+  if (!maisPressionado && !menosPressionado) {
+    return;
   }
 
-  if (botaoMenosPontos.pressed()) {
+  if (!pontuacaoLiberada()) {
+    return;
+  }
+
+  registrarBloqueioPontuacao();
+
+  if (maisPressionado && !menosPressionado) {
+    alterarPlacar(equipeSelecionadaParaPontuar(), PONTO_PADRAO);
+  } else if (menosPressionado && !maisPressionado) {
     alterarPlacar(equipeSelecionadaParaPontuar(), -PONTO_PADRAO);
+  } else {
+    iniciarSom(SOM_ERRO, sizeof(SOM_ERRO) / sizeof(SOM_ERRO[0]));
+    mostrarMensagemTemporaria("USE + OU -", 1000);
+    Serial.println(F("[ERRO] Botões + e - pressionados simultaneamente."));
   }
 }
 
@@ -619,20 +706,20 @@ void setup() {
   Serial.begin(115200);
 
   pinMode(PINO_CHAVE_PONTUACAO_AZUL, INPUT_PULLUP);
-  pinMode(PINO_CHAVE_PONTUACAO_VERMELHA, INPUT_PULLUP);
+  pinMode(PINO_CHAVE_PONTUACAO_VERDE, INPUT_PULLUP);
 
   pinMode(PINO_LED_AZUL, OUTPUT);
-  pinMode(PINO_LED_VERMELHO, OUTPUT);
+  pinMode(PINO_LED_VERDE, OUTPUT);
   pinMode(PINO_LED_PRONTO, OUTPUT);
   pinMode(PINO_BUZZER, OUTPUT);
 
   digitalWrite(PINO_LED_AZUL, LOW);
-  digitalWrite(PINO_LED_VERMELHO, LOW);
+  digitalWrite(PINO_LED_VERDE, LOW);
   digitalWrite(PINO_LED_PRONTO, LOW);
   digitalWrite(PINO_BUZZER, LOW);
 
   botaoAzul.begin(PINO_BOTAO_AZUL);
-  botaoVermelho.begin(PINO_BOTAO_VERMELHO);
+  botaoVerde.begin(PINO_BOTAO_VERDE);
   botaoReset.begin(PINO_BOTAO_RESET);
   botaoMaisPontos.begin(PINO_BOTAO_MAIS_PONTOS);
   botaoMenosPontos.begin(PINO_BOTAO_MENOS_PONTOS);
@@ -646,13 +733,14 @@ void setup() {
   imprimirLinhaLCD(0, "PASSA OU REPASSA");
   imprimirLinhaLCD(1, "Inicializando...");
   imprimirLinhaLCD(2, "Mega 2560 + LCD");
-  imprimirLinhaLCD(3, "SDA20 SCL21");
+  imprimirLinhaLCD(3, "Buzzer D8 ativo");
 
   delay(900);
 
   lcd.clear();
   desenharLCD();
   imprimirAjudaSerial();
+  iniciarSom(SOM_INICIALIZACAO, sizeof(SOM_INICIALIZACAO) / sizeof(SOM_INICIALIZACAO[0]));
 
   Serial.println(F("[OK] Sistema iniciado."));
 }
