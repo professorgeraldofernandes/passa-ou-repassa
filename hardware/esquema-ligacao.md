@@ -17,20 +17,23 @@ Quando o botão for pressionado, o Arduino lerá `LOW`.
 
 A chave seletora de duas posições será utilizada para selecionar qual equipe receberá ajuste de pontuação.
 
-### Ligação inicial recomendada
+Para uma leitura mais segura, cada posição da chave deverá ser ligada a uma entrada digital própria do Arduino.
+
+### Ligação recomendada
 
 ```text
-Pino 25 do Arduino ---- Contato comum da chave seletora
-Contato posição A ----- GND
-Contato posição V ----- Sem ligação direta, usando pull-up interno
+Pino 25 do Arduino ---- Contato da posição A ---- GND
+Pino 28 do Arduino ---- Contato da posição V ---- GND
 ```
 
-Com essa ligação:
+Com `INPUT_PULLUP`, a leitura será:
 
-| Estado elétrico no pino 25 | Posição considerada pelo firmware |
+| Estado elétrico | Interpretação |
 |---|---|
-| `LOW` | A — Equipe Azul |
-| `HIGH` | V — Equipe Verde |
+| Pino 25 = `LOW` e pino 28 = `HIGH` | A — Equipe Azul |
+| Pino 25 = `HIGH` e pino 28 = `LOW` | V — Equipe Verde |
+| Pino 25 = `HIGH` e pino 28 = `HIGH` | Nenhuma posição detectada ou falha de ligação |
+| Pino 25 = `LOW` e pino 28 = `LOW` | Erro de ligação ou acionamento simultâneo indevido |
 
 > Observação: antes da ligação definitiva, conferir os terminais da chave com multímetro, pois a disposição física dos contatos pode variar conforme o fabricante.
 
@@ -70,6 +73,7 @@ Para buzzer, sirene ou carga de maior corrente, utilizar transistor, relé ou m�
 | Arduino Mega 2560 | 1 | Controlador principal |
 | Botão tipo push button | 5 | Azul, verde, reset, + pontos e - pontos |
 | Chave seletora 2 posições | 1 | Seleção A/V da equipe para pontuação |
+| Bloco de contato NA para chave seletora | 2 | Um contato para A e outro para V |
 | LED azul | 1 | Indicador da Equipe Azul |
 | LED verde | 1 | Indicador da Equipe Verde |
 | LED de sistema pronto | 1 | Indicação de rodada liberada |
