@@ -20,16 +20,16 @@ A escolha do Mega 2560 é adequada porque ele possui grande quantidade de entrad
 ## 3. Entradas previstas
 
 - Botão da Equipe Azul.
-- Botão da Equipe Vermelha.
+- Botão da Equipe Verde.
 - Botão de reset da rodada.
 - Botão de ponto para Equipe Azul, em etapa futura.
-- Botão de ponto para Equipe Vermelha, em etapa futura.
+- Botão de ponto para Equipe Verde, em etapa futura.
 - Botão de penalidade, em etapa futura.
 
 ## 4. Saídas previstas
 
 - LED indicador da Equipe Azul.
-- LED indicador da Equipe Vermelha.
+- LED indicador da Equipe Verde.
 - Buzzer de sinalização.
 - LEDs de status do sistema.
 - Display ou placar digital, em etapa futura.
