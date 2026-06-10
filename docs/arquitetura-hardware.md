@@ -16,8 +16,9 @@ A escolha do Mega 2560 é adequada porque ele possui grande quantidade de entrad
                                              ---> [Placar Futuro]
                                              ---> [Relés / Efeitos Futuros]
 
-[Chave Seletora A/V] --->
-[Botão + Pontos] ------> [Arduino Mega 2560] ---> [Pontuação Azul / Verde]
+[Chave Seletora A] ---->
+[Chave Seletora V] ----> [Arduino Mega 2560] ---> [Pontuação Azul / Verde]
+[Botão + Pontos] ------>
 [Botão - Pontos] ------>
 ```
 
@@ -26,7 +27,8 @@ A escolha do Mega 2560 é adequada porque ele possui grande quantidade de entrad
 - Botão da Equipe Azul.
 - Botão da Equipe Verde.
 - Botão de reset da rodada.
-- Chave seletora A/V para escolha da equipe que receberá ajuste de pontuação.
+- Entrada da posição A da chave seletora.
+- Entrada da posição V da chave seletora.
 - Botão de incremento de pontos.
 - Botão de decremento de pontos.
 - Botão de penalidade, em etapa futura.
@@ -56,7 +58,20 @@ Exemplo:
 - Chave em `V` + botão `+ Pontos`: soma ponto para a Equipe Verde.
 - Chave em `V` + botão `- Pontos`: remove ponto da Equipe Verde.
 
-## 6. Boas práticas de montagem
+## 6. Validação elétrica da chave seletora
+
+Para maior confiabilidade, a posição A e a posição V serão lidas por entradas digitais separadas.
+
+| Entrada A | Entrada V | Interpretação |
+|---|---|---|
+| Ativa | Inativa | Equipe Azul selecionada |
+| Inativa | Ativa | Equipe Verde selecionada |
+| Inativa | Inativa | Nenhuma equipe selecionada ou falha de ligação |
+| Ativa | Ativa | Erro de ligação ou falha elétrica |
+
+Essa abordagem é mais segura do que usar apenas uma entrada digital, pois permite detectar falhas de montagem ou acionamentos inválidos.
+
+## 7. Boas práticas de montagem
 
 - Usar resistores adequados nos LEDs.
 - Usar botões com ligação em `INPUT_PULLUP`, sempre que possível.
@@ -67,6 +82,6 @@ Exemplo:
 - Prever caixa ou painel de proteção para uso em sala de aula.
 - Conferir os contatos da chave seletora com multímetro antes da ligação no Arduino.
 
-## 7. Observação de segurança
+## 8. Observação de segurança
 
 Caso o projeto acione sirene, lâmpada, motor, solenóide ou qualquer carga de maior potência, o circuito de potência deverá ser isolado do Arduino por módulo apropriado, com fonte dedicada e proteção elétrica adequada.
