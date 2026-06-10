@@ -6,7 +6,8 @@
   Descrição:
   Versão inicial do controle eletrônico do jogo Passa ou Repassa.
   Esta versão identifica qual equipe pressionou primeiro o botão,
-  aciona o LED correspondente e emite um sinal sonoro.
+  aciona o LED correspondente, emite sinal sonoro e permite ajustar
+  a pontuação por meio de uma chave seletora A/V com botões de + e -.
 
   Autor: Geraldo Fernandes
 */
@@ -16,11 +17,15 @@
 // =========================
 
 constexpr uint8_t PINO_BOTAO_AZUL = 22;
-constexpr uint8_t PINO_BOTAO_VERMELHO = 23;
+constexpr uint8_t PINO_BOTAO_VERDE = 23;
 constexpr uint8_t PINO_BOTAO_RESET = 24;
 
+constexpr uint8_t PINO_CHAVE_PONTUACAO_AV = 25;
+constexpr uint8_t PINO_BOTAO_MAIS_PONTOS = 26;
+constexpr uint8_t PINO_BOTAO_MENOS_PONTOS = 27;
+
 constexpr uint8_t PINO_LED_AZUL = 30;
-constexpr uint8_t PINO_LED_VERMELHO = 31;
+constexpr uint8_t PINO_LED_VERDE = 31;
 constexpr uint8_t PINO_LED_PRONTO = 32;
 
 constexpr uint8_t PINO_BUZZER = 8;
@@ -33,6 +38,9 @@ constexpr unsigned long TEMPO_DEBOUNCE_MS = 50;
 constexpr unsigned int FREQUENCIA_BUZZER_HZ = 2000;
 constexpr unsigned long TEMPO_BUZZER_MS = 150;
 
+constexpr int PONTUACAO_MINIMA = 0;
+constexpr int PONTUACAO_MAXIMA = 999;
+
 // =========================
 // Estados do jogo
 // =========================
@@ -40,14 +48,19 @@ constexpr unsigned long TEMPO_BUZZER_MS = 150;
 enum class EquipeSelecionada : uint8_t {
   Nenhuma,
   Azul,
-  Vermelha
+  Verde
 };
 
 EquipeSelecionada equipeSelecionada = EquipeSelecionada::Nenhuma;
 
+int pontuacaoAzul = 0;
+int pontuacaoVerde = 0;
+
 unsigned long ultimoAcionamentoAzul = 0;
-unsigned long ultimoAcionamentoVermelho = 0;
+unsigned long ultimoAcionamentoVerde = 0;
 unsigned long ultimoAcionamentoReset = 0;
+unsigned long ultimoAcionamentoMaisPontos = 0;
+unsigned long ultimoAcionamentoMenosPontos = 0;
 
 // =========================
 // Protótipos das funções
@@ -60,14 +73,21 @@ void reiniciarRodada();
 bool botaoPressionado(uint8_t pino, unsigned long &ultimoAcionamento);
 void sinalSonoro();
 void atualizarIndicadores();
+void atualizarPontuacao();
+void alterarPontuacao(int variacao);
+EquipeSelecionada lerEquipeSelecionadaParaPontuacao();
+void exibirPontuacaoSerial();
 
 // =========================
 // Setup
 // =========================
 
 void setup() {
+  Serial.begin(9600);
+
   configurarPinos();
   reiniciarRodada();
+  exibirPontuacaoSerial();
 }
 
 // =========================
@@ -76,6 +96,7 @@ void setup() {
 
 void loop() {
   atualizarJogo();
+  atualizarPontuacao();
 }
 
 // =========================
@@ -84,11 +105,15 @@ void loop() {
 
 void configurarPinos() {
   pinMode(PINO_BOTAO_AZUL, INPUT_PULLUP);
-  pinMode(PINO_BOTAO_VERMELHO, INPUT_PULLUP);
+  pinMode(PINO_BOTAO_VERDE, INPUT_PULLUP);
   pinMode(PINO_BOTAO_RESET, INPUT_PULLUP);
 
+  pinMode(PINO_CHAVE_PONTUACAO_AV, INPUT_PULLUP);
+  pinMode(PINO_BOTAO_MAIS_PONTOS, INPUT_PULLUP);
+  pinMode(PINO_BOTAO_MENOS_PONTOS, INPUT_PULLUP);
+
   pinMode(PINO_LED_AZUL, OUTPUT);
-  pinMode(PINO_LED_VERMELHO, OUTPUT);
+  pinMode(PINO_LED_VERDE, OUTPUT);
   pinMode(PINO_LED_PRONTO, OUTPUT);
   pinMode(PINO_BUZZER, OUTPUT);
 
@@ -116,10 +141,50 @@ void atualizarJogo() {
     return;
   }
 
-  if (botaoPressionado(PINO_BOTAO_VERMELHO, ultimoAcionamentoVermelho)) {
-    selecionarEquipe(EquipeSelecionada::Vermelha);
+  if (botaoPressionado(PINO_BOTAO_VERDE, ultimoAcionamentoVerde)) {
+    selecionarEquipe(EquipeSelecionada::Verde);
     return;
   }
+}
+
+// =========================
+// Controle de pontuação
+// =========================
+
+void atualizarPontuacao() {
+  if (botaoPressionado(PINO_BOTAO_MAIS_PONTOS, ultimoAcionamentoMaisPontos)) {
+    alterarPontuacao(+1);
+    return;
+  }
+
+  if (botaoPressionado(PINO_BOTAO_MENOS_PONTOS, ultimoAcionamentoMenosPontos)) {
+    alterarPontuacao(-1);
+    return;
+  }
+}
+
+void alterarPontuacao(int variacao) {
+  const EquipeSelecionada equipePontuacao = lerEquipeSelecionadaParaPontuacao();
+
+  if (equipePontuacao == EquipeSelecionada::Azul) {
+    pontuacaoAzul += variacao;
+    pontuacaoAzul = constrain(pontuacaoAzul, PONTUACAO_MINIMA, PONTUACAO_MAXIMA);
+  } else if (equipePontuacao == EquipeSelecionada::Verde) {
+    pontuacaoVerde += variacao;
+    pontuacaoVerde = constrain(pontuacaoVerde, PONTUACAO_MINIMA, PONTUACAO_MAXIMA);
+  }
+
+  sinalSonoro();
+  exibirPontuacaoSerial();
+}
+
+EquipeSelecionada lerEquipeSelecionadaParaPontuacao() {
+  // Com INPUT_PULLUP:
+  // LOW  = posição A, Equipe Azul
+  // HIGH = posição V, Equipe Verde
+  return digitalRead(PINO_CHAVE_PONTUACAO_AV) == LOW
+           ? EquipeSelecionada::Azul
+           : EquipeSelecionada::Verde;
 }
 
 // =========================
@@ -181,5 +246,16 @@ void atualizarIndicadores() {
 
   digitalWrite(PINO_LED_PRONTO, rodadaLivre ? HIGH : LOW);
   digitalWrite(PINO_LED_AZUL, equipeSelecionada == EquipeSelecionada::Azul ? HIGH : LOW);
-  digitalWrite(PINO_LED_VERMELHO, equipeSelecionada == EquipeSelecionada::Vermelha ? HIGH : LOW);
+  digitalWrite(PINO_LED_VERDE, equipeSelecionada == EquipeSelecionada::Verde ? HIGH : LOW);
+}
+
+// =========================
+// Exibição auxiliar via Serial
+// =========================
+
+void exibirPontuacaoSerial() {
+  Serial.print("Pontuacao Azul: ");
+  Serial.print(pontuacaoAzul);
+  Serial.print(" | Pontuacao Verde: ");
+  Serial.println(pontuacaoVerde);
 }
