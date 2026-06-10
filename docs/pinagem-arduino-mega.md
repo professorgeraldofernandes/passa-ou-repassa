@@ -7,9 +7,10 @@
 | Botão Equipe Azul | 22 | Entrada digital | Usar `INPUT_PULLUP` |
 | Botão Equipe Verde | 23 | Entrada digital | Usar `INPUT_PULLUP` |
 | Botão Reset Rodada | 24 | Entrada digital | Usar `INPUT_PULLUP` |
-| Chave Seletora A/V Pontuação | 25 | Entrada digital | Seleciona qual equipe recebe ajuste de pontos |
+| Chave Seletora A — Pontuação Azul | 25 | Entrada digital | Ativa quando a chave estiver na posição A |
 | Botão + Pontos | 26 | Entrada digital | Soma 1 ponto na equipe selecionada pela chave A/V |
 | Botão - Pontos | 27 | Entrada digital | Subtrai 1 ponto da equipe selecionada pela chave A/V |
+| Chave Seletora V — Pontuação Verde | 28 | Entrada digital | Ativa quando a chave estiver na posição V |
 | LED Equipe Azul | 30 | Saída digital | Usar resistor limitador |
 | LED Equipe Verde | 31 | Saída digital | Usar resistor limitador |
 | LED Sistema Pronto | 32 | Saída digital | Indicação de sistema liberado |
@@ -33,24 +34,34 @@ A chave seletora define qual equipe será alterada pelos botões de pontuação:
 - Posição `A`: os botões `+ Pontos` e `- Pontos` alteram a pontuação da Equipe Azul.
 - Posição `V`: os botões `+ Pontos` e `- Pontos` alteram a pontuação da Equipe Verde.
 
-Na versão inicial do firmware, será adotada a seguinte leitura:
+Para uma leitura mais segura, serão utilizadas duas entradas digitais:
 
-| Leitura no pino 25 | Equipe selecionada |
-|---|---|
-| `LOW` | Azul |
-| `HIGH` | Verde |
+| Entrada | Pino | Condição ativa | Equipe selecionada |
+|---|---:|---|---|
+| Chave posição A | 25 | `LOW` | Azul |
+| Chave posição V | 28 | `LOW` | Verde |
 
-Caso a chave fique invertida na montagem física, basta inverter a lógica no firmware ou alterar a ligação do contato utilizado.
+## 4. Validação da chave seletora
 
-## 4. Observações técnicas
+O firmware deverá considerar a seleção válida apenas quando uma única posição estiver ativa.
+
+| Pino A | Pino V | Interpretação |
+|---|---|---|
+| `LOW` | `HIGH` | Equipe Azul selecionada |
+| `HIGH` | `LOW` | Equipe Verde selecionada |
+| `HIGH` | `HIGH` | Nenhuma equipe selecionada ou falha de ligação |
+| `LOW` | `LOW` | Erro de ligação ou acionamento simultâneo indevido |
+
+## 5. Observações técnicas
 
 - Os pinos podem ser alterados conforme o layout físico da montagem.
 - Evitar usar pinos 0 e 1, pois são utilizados pela comunicação serial USB.
 - Reservar pinos PWM para recursos futuros, como efeitos sonoros ou iluminação.
 - Reservar pinos de comunicação SPI/I2C para displays, módulos SD ou expansões futuras.
 - Conferir a chave seletora com multímetro antes da ligação definitiva.
+- A chave seletora pode exigir dois blocos de contato, um para a posição A e outro para a posição V.
 
-## 5. Expansões futuras sugeridas
+## 6. Expansões futuras sugeridas
 
 | Recurso futuro | Pinos sugeridos | Observação |
 |---|---|---|
