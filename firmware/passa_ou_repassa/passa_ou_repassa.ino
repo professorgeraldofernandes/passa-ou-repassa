@@ -1,7 +1,7 @@
 /*
   Projeto: Passa ou Repassa
   Arquivo: firmware/passa_ou_repassa/passa_ou_repassa.ino
-  Versão: 0.3.0
+  Versão: 0.4.0
   Plataforma: Arduino Mega 2560
   Linguagem: C++ / Arduino
   Display: LCD 20x4 I2C
@@ -11,12 +11,13 @@
   travamento da primeira equipe que pressionar, sinalização por LEDs,
   buzzer, reset de rodada, pontuação manual e placar no display LCD 20x4.
 
-  Alterações da versão 0.3.0:
-  - Chave de pontuação Azul movida para D28.
-  - Chave de pontuação Verde movida para D25.
-  - Equipe Vermelha renomeada para Verde.
-  - Adicionado bloqueio de pontuação para evitar múltiplos pontos em um único clique.
-  - Buzzer no D8 com sons de inicialização, rodada, pontuação, erro e reset.
+  Alterações da versão 0.4.0:
+  - Buzzer toca por 5 segundos quando a equipe Azul ou Verde pressiona o botão de resposta.
+  - Buzzer desliga automaticamente após o tempo de alerta da rodada.
+  - Reset pressionado por mais de 1 segundo ativa alerta intermitente no buzzer.
+  - Alerta de reset avisa que o placar será zerado se o botão permanecer pressionado até 5 segundos.
+  - Mantida a chave de pontuação Azul no D28 e Verde no D25.
+  - Mantido bloqueio de pontuação para evitar múltiplos pontos em um único clique.
 
   Autor: Geraldo Fernandes
 */
@@ -45,14 +46,24 @@ constexpr int PONTO_PADRAO = 1;
 constexpr int PLACAR_MIN = -99;
 constexpr int PLACAR_MAX = 999;
 
-// Aumentado para reduzir efeitos de repique mecânico.
+// Valor maior ajuda a reduzir repique mecânico de botões comuns.
 constexpr unsigned long DEBOUNCE_MS = 80;
 
 constexpr unsigned long LCD_REFRESH_MS = 250;
+
+// Reset curto libera a rodada. Reset pressionado por 5 s zera o placar.
+constexpr unsigned long RESET_ALERTA_INICIO_MS = 1000;
 constexpr unsigned long RESET_ZERA_PLACAR_MS = 5000;
 
 // Bloqueio adicional para evitar que um único clique some/subtraia mais de um ponto.
 constexpr unsigned long BLOQUEIO_PONTUACAO_MS = 450;
+
+// Alerta sonoro quando uma equipe bate o botão para responder.
+constexpr unsigned long BUZZER_RODADA_MS = 5000;
+constexpr unsigned long BUZZER_RODADA_INTERVALO_MS = 160;
+
+// Alerta sonoro enquanto o reset está pressionado e próximo de zerar o placar.
+constexpr unsigned long BUZZER_RESET_INTERVALO_MS = 130;
 
 // true  = buzzer passivo, usa tone().
 // false = buzzer ativo 5 V, usa HIGH/LOW.
@@ -91,6 +102,13 @@ enum Equipe : uint8_t {
   EQUIPE_VERDE = 2
 };
 
+enum BuzzerModo : uint8_t {
+  BUZZER_MODO_DESLIGADO = 0,
+  BUZZER_MODO_SEQUENCIA = 1,
+  BUZZER_MODO_ALERTA_RODADA = 2,
+  BUZZER_MODO_ALERTA_RESET = 3
+};
+
 struct NotaBuzzer {
   uint16_t frequenciaHz;
   uint16_t duracaoMs;
@@ -105,33 +123,31 @@ Equipe equipeTravada = EQUIPE_NENHUMA;
 bool lcdPrecisaAtualizar = true;
 unsigned long ultimaAtualizacaoLCD = 0;
 
+BuzzerModo buzzerModo = BUZZER_MODO_DESLIGADO;
 const NotaBuzzer* sequenciaAtual = nullptr;
 uint8_t totalNotasSequencia = 0;
 uint8_t indiceNotaSequencia = 0;
 bool buzzerLigado = false;
 bool buzzerEmPausa = false;
 unsigned long proximaTrocaBuzzer = 0;
+unsigned long buzzerFimModo = 0;
+unsigned long ultimaAlternanciaBuzzer = 0;
 
 bool resetLongoExecutado = false;
+bool alertaResetAtivo = false;
 unsigned long ultimaAcaoPontuacao = 0;
 
 char mensagemTemporaria[21] = "";
 unsigned long mensagemTemporariaAte = 0;
 
 // =====================================================
-// SONS DO JOGO
+// SONS CURTOS DO JOGO
 // =====================================================
 
 const NotaBuzzer SOM_INICIALIZACAO[] = {
   {900, 90, 30},
   {1300, 90, 30},
   {1800, 130, 0}
-};
-
-const NotaBuzzer SOM_TRAVOU_RODADA[] = {
-  {1600, 100, 60},
-  {1600, 100, 60},
-  {2200, 160, 0}
 };
 
 const NotaBuzzer SOM_PONTO_ADICIONADO[] = {
@@ -277,11 +293,26 @@ void buzzerOff() {
   digitalWrite(PINO_BUZZER, LOW);
 }
 
-void iniciarSom(const NotaBuzzer* sequencia, uint8_t totalNotas) {
+void pararSom() {
+  buzzerOff();
+  buzzerModo = BUZZER_MODO_DESLIGADO;
+  sequenciaAtual = nullptr;
+  totalNotasSequencia = 0;
+  indiceNotaSequencia = 0;
+  buzzerEmPausa = false;
+  proximaTrocaBuzzer = 0;
+  buzzerFimModo = 0;
+  ultimaAlternanciaBuzzer = 0;
+}
+
+void iniciarSomSequencia(const NotaBuzzer* sequencia, uint8_t totalNotas) {
   if (sequencia == nullptr || totalNotas == 0) {
     return;
   }
 
+  pararSom();
+
+  buzzerModo = BUZZER_MODO_SEQUENCIA;
   sequenciaAtual = sequencia;
   totalNotasSequencia = totalNotas;
   indiceNotaSequencia = 0;
@@ -291,20 +322,28 @@ void iniciarSom(const NotaBuzzer* sequencia, uint8_t totalNotas) {
   proximaTrocaBuzzer = millis() + sequenciaAtual[indiceNotaSequencia].duracaoMs;
 }
 
-void pararSom() {
-  buzzerOff();
-  sequenciaAtual = nullptr;
-  totalNotasSequencia = 0;
-  indiceNotaSequencia = 0;
-  buzzerEmPausa = false;
-  proximaTrocaBuzzer = 0;
+void iniciarAlertaRodadaCincoSegundos() {
+  pararSom();
+
+  buzzerModo = BUZZER_MODO_ALERTA_RODADA;
+  buzzerFimModo = millis() + BUZZER_RODADA_MS;
+  ultimaAlternanciaBuzzer = 0;
+  buzzerLigado = false;
 }
 
-void atualizarBuzzer() {
-  if (sequenciaAtual == nullptr) {
-    return;
-  }
+void iniciarAlertaReset() {
+  pararSom();
 
+  alertaResetAtivo = true;
+  buzzerModo = BUZZER_MODO_ALERTA_RESET;
+  ultimaAlternanciaBuzzer = 0;
+  buzzerLigado = false;
+
+  mostrarMensagemTemporaria("SEGURE P/ ZERAR", 1200);
+  Serial.println(F("[ALERTA] Reset pressionado. Continue segurando para zerar o placar."));
+}
+
+void atualizarSequenciaBuzzer() {
   const unsigned long agora = millis();
 
   if (agora < proximaTrocaBuzzer) {
@@ -333,6 +372,59 @@ void atualizarBuzzer() {
   buzzerEmPausa = false;
   buzzerOn(sequenciaAtual[indiceNotaSequencia].frequenciaHz);
   proximaTrocaBuzzer = agora + sequenciaAtual[indiceNotaSequencia].duracaoMs;
+}
+
+void atualizarAlertaRodadaBuzzer() {
+  const unsigned long agora = millis();
+
+  if (agora >= buzzerFimModo) {
+    pararSom();
+    return;
+  }
+
+  if (agora - ultimaAlternanciaBuzzer >= BUZZER_RODADA_INTERVALO_MS) {
+    ultimaAlternanciaBuzzer = agora;
+
+    if (buzzerLigado) {
+      buzzerOff();
+    } else {
+      buzzerOn(1800);
+    }
+  }
+}
+
+void atualizarAlertaResetBuzzer() {
+  const unsigned long agora = millis();
+
+  if (agora - ultimaAlternanciaBuzzer >= BUZZER_RESET_INTERVALO_MS) {
+    ultimaAlternanciaBuzzer = agora;
+
+    if (buzzerLigado) {
+      buzzerOff();
+    } else {
+      buzzerOn(650);
+    }
+  }
+}
+
+void atualizarBuzzer() {
+  switch (buzzerModo) {
+    case BUZZER_MODO_SEQUENCIA:
+      atualizarSequenciaBuzzer();
+      break;
+
+    case BUZZER_MODO_ALERTA_RODADA:
+      atualizarAlertaRodadaBuzzer();
+      break;
+
+    case BUZZER_MODO_ALERTA_RESET:
+      atualizarAlertaResetBuzzer();
+      break;
+
+    case BUZZER_MODO_DESLIGADO:
+    default:
+      break;
+  }
 }
 
 // =====================================================
@@ -466,9 +558,10 @@ void atualizarLedPronto() {
 
 void resetarRodada() {
   equipeTravada = EQUIPE_NENHUMA;
+  alertaResetAtivo = false;
   pararSom();
   atualizarSaidas();
-  iniciarSom(SOM_RESET, sizeof(SOM_RESET) / sizeof(SOM_RESET[0]));
+  iniciarSomSequencia(SOM_RESET, sizeof(SOM_RESET) / sizeof(SOM_RESET[0]));
   mostrarMensagemTemporaria("RODADA LIBERADA", 1000);
 
   Serial.println(F("[RESET] Rodada liberada."));
@@ -484,10 +577,11 @@ void zerarPlacar() {
 
 void zerarPlacarERodada() {
   equipeTravada = EQUIPE_NENHUMA;
+  alertaResetAtivo = false;
   pararSom();
   atualizarSaidas();
   zerarPlacar();
-  iniciarSom(SOM_RESET, sizeof(SOM_RESET) / sizeof(SOM_RESET[0]));
+  iniciarSomSequencia(SOM_RESET, sizeof(SOM_RESET) / sizeof(SOM_RESET[0]));
 }
 
 void travarRodada(Equipe equipe) {
@@ -497,7 +591,11 @@ void travarRodada(Equipe equipe) {
 
   equipeTravada = equipe;
   atualizarSaidas();
-  iniciarSom(SOM_TRAVOU_RODADA, sizeof(SOM_TRAVOU_RODADA) / sizeof(SOM_TRAVOU_RODADA[0]));
+
+  // Alerta principal: indica que alguém bateu o botão para responder.
+  // O buzzer toca por 5 segundos e desliga automaticamente.
+  iniciarAlertaRodadaCincoSegundos();
+
   solicitarAtualizacaoLCD();
 
   Serial.print(F("[RODADA] Travou equipe: "));
@@ -510,16 +608,16 @@ void alterarPlacar(Equipe equipe, int delta) {
   } else if (equipe == EQUIPE_VERDE) {
     placarVerde = limitarPlacar(placarVerde + delta);
   } else {
-    iniciarSom(SOM_ERRO, sizeof(SOM_ERRO) / sizeof(SOM_ERRO[0]));
+    iniciarSomSequencia(SOM_ERRO, sizeof(SOM_ERRO) / sizeof(SOM_ERRO[0]));
     mostrarMensagemTemporaria("SELECIONE EQUIPE", 1200);
     Serial.println(F("[ERRO] Nenhuma equipe selecionada para pontuar."));
     return;
   }
 
   if (delta > 0) {
-    iniciarSom(SOM_PONTO_ADICIONADO, sizeof(SOM_PONTO_ADICIONADO) / sizeof(SOM_PONTO_ADICIONADO[0]));
+    iniciarSomSequencia(SOM_PONTO_ADICIONADO, sizeof(SOM_PONTO_ADICIONADO) / sizeof(SOM_PONTO_ADICIONADO[0]));
   } else {
-    iniciarSom(SOM_PONTO_REMOVIDO, sizeof(SOM_PONTO_REMOVIDO) / sizeof(SOM_PONTO_REMOVIDO[0]));
+    iniciarSomSequencia(SOM_PONTO_REMOVIDO, sizeof(SOM_PONTO_REMOVIDO) / sizeof(SOM_PONTO_REMOVIDO[0]));
   }
 
   solicitarAtualizacaoLCD();
@@ -643,7 +741,7 @@ void processarBotoesResposta() {
     travarRodada(EQUIPE_VERDE);
   } else if (azulPressionado && verdePressionado) {
     mostrarMensagemTemporaria("EMPATE - REPETIR", 1200);
-    iniciarSom(SOM_EMPATE, sizeof(SOM_EMPATE) / sizeof(SOM_EMPATE[0]));
+    iniciarSomSequencia(SOM_EMPATE, sizeof(SOM_EMPATE) / sizeof(SOM_EMPATE[0]));
     Serial.println(F("[RODADA] Pressionamento simultaneo. Repetir rodada."));
   }
 }
@@ -675,7 +773,7 @@ void processarBotoesPontuacao() {
   } else if (menosPressionado && !maisPressionado) {
     alterarPlacar(equipeSelecionadaParaPontuar(), -PONTO_PADRAO);
   } else {
-    iniciarSom(SOM_ERRO, sizeof(SOM_ERRO) / sizeof(SOM_ERRO[0]));
+    iniciarSomSequencia(SOM_ERRO, sizeof(SOM_ERRO) / sizeof(SOM_ERRO[0]));
     mostrarMensagemTemporaria("USE + OU -", 1000);
     Serial.println(F("[ERRO] Botões + e - pressionados simultaneamente."));
   }
@@ -684,14 +782,26 @@ void processarBotoesPontuacao() {
 void processarBotaoReset() {
   if (botaoReset.pressed()) {
     resetLongoExecutado = false;
+    alertaResetAtivo = false;
   }
 
-  if (botaoReset.isPressed() && !resetLongoExecutado && botaoReset.pressedFor() >= RESET_ZERA_PLACAR_MS) {
-    zerarPlacarERodada();
-    resetLongoExecutado = true;
+  if (botaoReset.isPressed() && !resetLongoExecutado) {
+    if (!alertaResetAtivo && botaoReset.pressedFor() >= RESET_ALERTA_INICIO_MS) {
+      iniciarAlertaReset();
+    }
+
+    if (botaoReset.pressedFor() >= RESET_ZERA_PLACAR_MS) {
+      zerarPlacarERodada();
+      resetLongoExecutado = true;
+    }
   }
 
   if (botaoReset.released()) {
+    if (alertaResetAtivo) {
+      alertaResetAtivo = false;
+      pararSom();
+    }
+
     if (!resetLongoExecutado) {
       resetarRodada();
     }
@@ -740,7 +850,7 @@ void setup() {
   lcd.clear();
   desenharLCD();
   imprimirAjudaSerial();
-  iniciarSom(SOM_INICIALIZACAO, sizeof(SOM_INICIALIZACAO) / sizeof(SOM_INICIALIZACAO[0]));
+  iniciarSomSequencia(SOM_INICIALIZACAO, sizeof(SOM_INICIALIZACAO) / sizeof(SOM_INICIALIZACAO[0]));
 
   Serial.println(F("[OK] Sistema iniciado."));
 }
