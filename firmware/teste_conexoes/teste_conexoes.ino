@@ -4,24 +4,38 @@
   Plataforma: Arduino Mega 2560
 
   Objetivo:
-  Testar as entradas e saidas ja mapeadas no projeto usando:
+  Testar as entradas, saidas e dispositivos I2C ja mapeados no projeto usando:
   - Monitor Serial
   - Display LCD I2C 20x4
-  - Display Grafico 12864B V2 com controlador ST7920
+  - Display 12864B V2 com modulo I2C
 
   Bibliotecas necessarias:
   - Wire
   - LiquidCrystal_I2C
-  - U8g2
 
-  Observacao:
-  O Display 12864B V2 deve estar configurado em modo serial.
-  Em muitos modulos ST7920, isso exige ligar o pino PSB ao GND.
+  Observacao importante:
+  O LCD 20x4 e o Display 12864B V2 devem compartilhar o mesmo barramento I2C:
+  - SDA = pino 20 do Arduino Mega 2560
+  - SCL = pino 21 do Arduino Mega 2560
+
+  Para que dois dispositivos I2C funcionem no mesmo barramento, eles precisam ter
+  enderecos I2C diferentes. Caso os dois estejam no mesmo endereco, havera conflito.
 */
 
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
-#include <U8g2lib.h>
+
+// =========================
+// Configuracao dos enderecos I2C
+// =========================
+
+// Enderecos comuns para LCD I2C 20x4: 0x27 ou 0x3F.
+// Ajuste manualmente se o scanner indicar outro endereco.
+constexpr uint8_t ENDERECO_LCD20X4_PREFERENCIAL = 0x27;
+
+// Ajuste conforme o endereco encontrado pelo scanner I2C.
+// Muitos modulos I2C 12864 podem aparecer como 0x3C, 0x3D, 0x3F ou outro endereco.
+constexpr uint8_t ENDERECO_DISPLAY_12864_PREFERENCIAL = 0x3F;
 
 // =========================
 // Pinos das entradas
@@ -46,45 +60,32 @@ constexpr uint8_t PINO_LED_PRONTO = 32;
 constexpr uint8_t PINO_BUZZER = 8;
 
 // =========================
+// Barramento I2C - Arduino Mega 2560
+// =========================
+
+constexpr uint8_t PINO_I2C_SDA = 20;
+constexpr uint8_t PINO_I2C_SCL = 21;
+
+// =========================
 // Display LCD I2C 20x4
-// Arduino Mega 2560: SDA = 20, SCL = 21
 // =========================
 
 LiquidCrystal_I2C *lcd20x4 = NULL;
 uint8_t enderecoLCD20x4 = 0;
+uint8_t enderecoDisplay12864 = 0;
 
 // =========================
-// Display 12864B V2 - ST7920 em modo serial
-// Ligações sugeridas:
-// E/SCLK  -> pino 52
-// RW/SID  -> pino 51
-// RS/CS   -> pino 53
-// RST     -> pino 49
-// PSB     -> GND, para modo serial
-// =========================
-
-constexpr uint8_t PINO_12864_E_CLK = 52;
-constexpr uint8_t PINO_12864_RW_DAT = 51;
-constexpr uint8_t PINO_12864_RS_CS = 53;
-constexpr uint8_t PINO_12864_RST = 49;
-
-U8G2_ST7920_128X64_1_SW_SPI display12864(
-  U8G2_R0,
-  PINO_12864_E_CLK,
-  PINO_12864_RW_DAT,
-  PINO_12864_RS_CS,
-  PINO_12864_RST
-);
-
-// =========================
-// Configurações gerais
+// Configuracoes gerais
 // =========================
 
 constexpr unsigned long INTERVALO_ATUALIZACAO_MS = 500;
 constexpr unsigned int FREQUENCIA_BUZZER_HZ = 1800;
 constexpr unsigned long TEMPO_BUZZER_MS = 80;
+constexpr uint8_t MAX_DISPOSITIVOS_I2C = 12;
 
 unsigned long ultimaAtualizacao = 0;
+uint8_t dispositivosI2C[MAX_DISPOSITIVOS_I2C];
+uint8_t totalDispositivosI2C = 0;
 
 // =========================
 // Estruturas auxiliares
@@ -115,20 +116,23 @@ EstadoEntradas entradas;
 
 void configurarPinos();
 void testarSaidasIniciais();
+void inicializarDispositivosI2C();
 void inicializarLCD20x4();
-void inicializarDisplay12864();
 void atualizarEntradas();
 void atualizarSaidasDeTeste();
 void atualizarMonitorSerial();
 void atualizarLCD20x4();
-void atualizarDisplay12864();
 void escreverLinhaLCD(uint8_t linha, const String &texto);
 bool entradaAtiva(uint8_t pino);
-uint8_t detectarEnderecoLCD20x4();
+void escanearBarramentoI2C();
 bool dispositivoI2CResponde(uint8_t endereco);
+bool enderecoFoiEncontrado(uint8_t endereco);
+uint8_t detectarEnderecoLCD20x4();
+uint8_t detectarEnderecoDisplay12864();
 EstadoChaveAV lerEstadoChaveAV();
 const char *textoOnOff(bool estado);
 const char *textoChaveAV(EstadoChaveAV estado);
+void imprimirEnderecoI2C(uint8_t endereco);
 void beepCurto();
 
 // =========================
@@ -142,17 +146,20 @@ void setup() {
   Serial.println(F("========================================"));
   Serial.println(F("Passa ou Repassa - Teste de Conexoes"));
   Serial.println(F("Arduino Mega 2560"));
+  Serial.println(F("Displays no mesmo barramento I2C"));
+  Serial.println(F("SDA=20 | SCL=21"));
   Serial.println(F("========================================"));
 
   configurarPinos();
   Wire.begin();
 
+  inicializarDispositivosI2C();
   inicializarLCD20x4();
-  inicializarDisplay12864();
   testarSaidasIniciais();
 
   Serial.println(F("Sistema de teste iniciado."));
-  Serial.println(F("Acione cada botao/chave e confira o Serial e os displays."));
+  Serial.println(F("Acione cada botao/chave e confira o Serial e o LCD 20x4."));
+  Serial.println(F("O Display 12864B V2 sera validado como dispositivo I2C no barramento."));
 }
 
 // =========================
@@ -170,7 +177,6 @@ void loop() {
 
     atualizarMonitorSerial();
     atualizarLCD20x4();
-    atualizarDisplay12864();
   }
 }
 
@@ -222,12 +228,104 @@ void testarSaidasIniciais() {
 }
 
 // =========================
-// Inicializacao dos displays
+// Inicializacao I2C
 // =========================
 
-void inicializarLCD20x4() {
-  enderecoLCD20x4 = detectarEnderecoLCD20x4();
+void inicializarDispositivosI2C() {
+  escanearBarramentoI2C();
 
+  enderecoLCD20x4 = detectarEnderecoLCD20x4();
+  enderecoDisplay12864 = detectarEnderecoDisplay12864();
+
+  if (totalDispositivosI2C == 0) {
+    Serial.println(F("Nenhum dispositivo I2C encontrado. Verifique SDA, SCL, VCC e GND."));
+    return;
+  }
+
+  if (enderecoLCD20x4 == 0) {
+    Serial.println(F("LCD I2C 20x4 nao identificado automaticamente."));
+  }
+
+  if (enderecoDisplay12864 == 0) {
+    Serial.println(F("Display 12864B V2 I2C nao identificado automaticamente."));
+  }
+
+  if (enderecoLCD20x4 != 0 && enderecoDisplay12864 != 0 && enderecoLCD20x4 == enderecoDisplay12864) {
+    Serial.println(F("ATENCAO: LCD 20x4 e Display 12864 parecem estar no mesmo endereco I2C."));
+    Serial.println(F("Dois dispositivos I2C no mesmo barramento precisam de enderecos diferentes."));
+  }
+}
+
+void escanearBarramentoI2C() {
+  totalDispositivosI2C = 0;
+
+  Serial.println(F("Escaneando barramento I2C..."));
+
+  for (uint8_t endereco = 1; endereco < 127; endereco++) {
+    if (dispositivoI2CResponde(endereco)) {
+      if (totalDispositivosI2C < MAX_DISPOSITIVOS_I2C) {
+        dispositivosI2C[totalDispositivosI2C] = endereco;
+        totalDispositivosI2C++;
+      }
+
+      Serial.print(F("Dispositivo I2C encontrado em "));
+      imprimirEnderecoI2C(endereco);
+      Serial.println();
+    }
+  }
+
+  Serial.print(F("Total de dispositivos I2C encontrados: "));
+  Serial.println(totalDispositivosI2C);
+}
+
+bool dispositivoI2CResponde(uint8_t endereco) {
+  Wire.beginTransmission(endereco);
+  return Wire.endTransmission() == 0;
+}
+
+bool enderecoFoiEncontrado(uint8_t endereco) {
+  for (uint8_t i = 0; i < totalDispositivosI2C; i++) {
+    if (dispositivosI2C[i] == endereco) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+uint8_t detectarEnderecoLCD20x4() {
+  if (enderecoFoiEncontrado(ENDERECO_LCD20X4_PREFERENCIAL)) {
+    return ENDERECO_LCD20X4_PREFERENCIAL;
+  }
+
+  const uint8_t enderecosComunsLCD[] = {0x27, 0x3F};
+
+  for (uint8_t i = 0; i < 2; i++) {
+    if (enderecoFoiEncontrado(enderecosComunsLCD[i])) {
+      return enderecosComunsLCD[i];
+    }
+  }
+
+  return 0;
+}
+
+uint8_t detectarEnderecoDisplay12864() {
+  if (enderecoFoiEncontrado(ENDERECO_DISPLAY_12864_PREFERENCIAL)) {
+    return ENDERECO_DISPLAY_12864_PREFERENCIAL;
+  }
+
+  // Caso o endereco preferencial nao seja encontrado, assume o primeiro endereco
+  // I2C detectado que seja diferente do LCD 20x4.
+  for (uint8_t i = 0; i < totalDispositivosI2C; i++) {
+    if (dispositivosI2C[i] != enderecoLCD20x4) {
+      return dispositivosI2C[i];
+    }
+  }
+
+  return 0;
+}
+
+void inicializarLCD20x4() {
   if (enderecoLCD20x4 == 0) {
     Serial.println(F("LCD I2C 20x4 nao encontrado no barramento I2C."));
     Serial.println(F("Verifique SDA=20, SCL=21, VCC, GND e endereco I2C."));
@@ -241,26 +339,17 @@ void inicializarLCD20x4() {
 
   escreverLinhaLCD(0, "Passa ou Repassa");
   escreverLinhaLCD(1, "Teste Conexoes");
-  escreverLinhaLCD(2, "LCD I2C OK");
-  escreverLinhaLCD(3, "Endereco: 0x" + String(enderecoLCD20x4, HEX));
+  escreverLinhaLCD(2, "LCD: 0x" + String(enderecoLCD20x4, HEX));
 
-  Serial.print(F("LCD I2C encontrado no endereco 0x"));
-  Serial.println(enderecoLCD20x4, HEX);
-}
+  if (enderecoDisplay12864 == 0) {
+    escreverLinhaLCD(3, "12864: Nao detect.");
+  } else {
+    escreverLinhaLCD(3, "12864: 0x" + String(enderecoDisplay12864, HEX));
+  }
 
-void inicializarDisplay12864() {
-  display12864.begin();
-  display12864.setFont(u8g2_font_6x10_tf);
-
-  display12864.firstPage();
-  do {
-    display12864.drawStr(0, 10, "Passa ou Repassa");
-    display12864.drawStr(0, 24, "Teste Conexoes");
-    display12864.drawStr(0, 38, "Display 12864B V2");
-    display12864.drawStr(0, 52, "ST7920 Serial");
-  } while (display12864.nextPage());
-
-  Serial.println(F("Display 12864 inicializado. Se nao houver imagem, verificar contraste, PSB e pinos."));
+  Serial.print(F("LCD I2C 20x4 selecionado no endereco "));
+  imprimirEnderecoI2C(enderecoLCD20x4);
+  Serial.println();
 }
 
 // =========================
@@ -288,17 +377,12 @@ bool entradaAtiva(uint8_t pino) {
 void atualizarSaidasDeTeste() {
   const EstadoChaveAV estadoChave = lerEstadoChaveAV();
 
-  // LED azul acompanha o botao da equipe azul.
   digitalWrite(PINO_LED_AZUL, entradas.botaoAzul ? HIGH : LOW);
-
-  // LED verde acompanha o botao da equipe verde.
   digitalWrite(PINO_LED_VERDE, entradas.botaoVerde ? HIGH : LOW);
 
-  // LED pronto acende quando a chave A/V esta em estado valido.
   const bool chaveValida = estadoChave == EstadoChaveAV::Azul || estadoChave == EstadoChaveAV::Verde;
   digitalWrite(PINO_LED_PRONTO, chaveValida ? HIGH : LOW);
 
-  // Buzzer soa enquanto + ou - pontos estiver pressionado.
   if (entradas.botaoMais || entradas.botaoMenos) {
     tone(PINO_BUZZER, FREQUENCIA_BUZZER_HZ);
   } else {
@@ -336,12 +420,20 @@ void atualizarMonitorSerial() {
   Serial.print(F("Botao - Pontos: "));
   Serial.println(textoOnOff(entradas.botaoMenos));
 
-  Serial.print(F("LCD I2C: "));
+  Serial.print(F("LCD 20x4 I2C: "));
   if (enderecoLCD20x4 == 0) {
     Serial.println(F("NAO ENCONTRADO"));
   } else {
-    Serial.print(F("0x"));
-    Serial.println(enderecoLCD20x4, HEX);
+    imprimirEnderecoI2C(enderecoLCD20x4);
+    Serial.println();
+  }
+
+  Serial.print(F("Display 12864B V2 I2C: "));
+  if (enderecoDisplay12864 == 0) {
+    Serial.println(F("NAO ENCONTRADO"));
+  } else {
+    imprimirEnderecoI2C(enderecoDisplay12864);
+    Serial.println(F(" - CONEXAO I2C OK"));
   }
 }
 
@@ -356,10 +448,15 @@ void atualizarLCD20x4() {
 
   const EstadoChaveAV estadoChave = lerEstadoChaveAV();
 
-  escreverLinhaLCD(0, "Teste de Conexoes");
-  escreverLinhaLCD(1, "Az:" + String(textoOnOff(entradas.botaoAzul)) + " Vd:" + String(textoOnOff(entradas.botaoVerde)));
-  escreverLinhaLCD(2, "R:" + String(textoOnOff(entradas.botaoReset)) + " +:" + String(textoOnOff(entradas.botaoMais)) + " -:" + String(textoOnOff(entradas.botaoMenos)));
-  escreverLinhaLCD(3, "Chave: " + String(textoChaveAV(estadoChave)));
+  escreverLinhaLCD(0, "Az:" + String(textoOnOff(entradas.botaoAzul)) + " Vd:" + String(textoOnOff(entradas.botaoVerde)) + " Rs:" + String(textoOnOff(entradas.botaoReset)));
+  escreverLinhaLCD(1, "+:" + String(textoOnOff(entradas.botaoMais)) + " -:" + String(textoOnOff(entradas.botaoMenos)) + " Ch:" + String(textoChaveAV(estadoChave)));
+  escreverLinhaLCD(2, "LCD20x4: 0x" + String(enderecoLCD20x4, HEX));
+
+  if (enderecoDisplay12864 == 0) {
+    escreverLinhaLCD(3, "12864 I2C: N/D");
+  } else {
+    escreverLinhaLCD(3, "12864 I2C: 0x" + String(enderecoDisplay12864, HEX));
+  }
 }
 
 void escreverLinhaLCD(uint8_t linha, const String &texto) {
@@ -379,74 +476,6 @@ void escreverLinhaLCD(uint8_t linha, const String &texto) {
 
   lcd20x4->setCursor(0, linha);
   lcd20x4->print(textoAjustado);
-}
-
-// =========================
-// Display grafico 12864
-// =========================
-
-void atualizarDisplay12864() {
-  const EstadoChaveAV estadoChave = lerEstadoChaveAV();
-
-  display12864.firstPage();
-  do {
-    display12864.setFont(u8g2_font_6x10_tf);
-    display12864.drawStr(0, 10, "Teste Conexoes");
-
-    display12864.setCursor(0, 22);
-    display12864.print(F("Az:"));
-    display12864.print(textoOnOff(entradas.botaoAzul));
-    display12864.print(F(" Vd:"));
-    display12864.print(textoOnOff(entradas.botaoVerde));
-
-    display12864.setCursor(0, 34);
-    display12864.print(F("R:"));
-    display12864.print(textoOnOff(entradas.botaoReset));
-    display12864.print(F(" +:"));
-    display12864.print(textoOnOff(entradas.botaoMais));
-    display12864.print(F(" -:"));
-    display12864.print(textoOnOff(entradas.botaoMenos));
-
-    display12864.setCursor(0, 46);
-    display12864.print(F("Chave: "));
-    display12864.print(textoChaveAV(estadoChave));
-
-    display12864.setCursor(0, 58);
-    display12864.print(F("I2C: "));
-    if (enderecoLCD20x4 == 0) {
-      display12864.print(F("N/D"));
-    } else {
-      display12864.print(F("0x"));
-      display12864.print(enderecoLCD20x4, HEX);
-    }
-  } while (display12864.nextPage());
-}
-
-// =========================
-// Scanner I2C simples
-// =========================
-
-uint8_t detectarEnderecoLCD20x4() {
-  const uint8_t enderecosPreferenciais[] = {0x27, 0x3F};
-
-  for (uint8_t i = 0; i < 2; i++) {
-    if (dispositivoI2CResponde(enderecosPreferenciais[i])) {
-      return enderecosPreferenciais[i];
-    }
-  }
-
-  for (uint8_t endereco = 1; endereco < 127; endereco++) {
-    if (dispositivoI2CResponde(endereco)) {
-      return endereco;
-    }
-  }
-
-  return 0;
-}
-
-bool dispositivoI2CResponde(uint8_t endereco) {
-  Wire.beginTransmission(endereco);
-  return Wire.endTransmission() == 0;
 }
 
 // =========================
@@ -486,6 +515,14 @@ const char *textoChaveAV(EstadoChaveAV estado) {
     default:
       return "Indef.";
   }
+}
+
+void imprimirEnderecoI2C(uint8_t endereco) {
+  Serial.print(F("0x"));
+  if (endereco < 16) {
+    Serial.print(F("0"));
+  }
+  Serial.print(endereco, HEX);
 }
 
 // =========================
