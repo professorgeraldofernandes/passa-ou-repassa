@@ -44,10 +44,10 @@ uint8_t enderecoLCD20x4 = 0;
 constexpr uint8_t PINO_BOTAO_AZUL         = 22;
 constexpr uint8_t PINO_BOTAO_VERDE        = 23;
 constexpr uint8_t PINO_BOTAO_RESET        = 24;
-constexpr uint8_t PINO_CHAVE_PONTUACAO_A  = 25;
+constexpr uint8_t PINO_CHAVE_PONTUACAO_A  = 28;
 constexpr uint8_t PINO_BOTAO_MAIS_PONTOS  = 26;
 constexpr uint8_t PINO_BOTAO_MENOS_PONTOS = 27;
-constexpr uint8_t PINO_CHAVE_PONTUACAO_V  = 28;
+constexpr uint8_t PINO_CHAVE_PONTUACAO_V  = 25;
 
 // =====================================================
 // Saidas auxiliares de teste
