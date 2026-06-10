@@ -7,7 +7,7 @@ O jogo é disputado por duas equipes. O mediador apresenta uma pergunta para uma
 ## 2. Equipes
 
 - Equipe Azul
-- Equipe Vermelha
+- Equipe Verde
 
 ## 3. Fluxo básico da rodada
 
@@ -21,7 +21,7 @@ O jogo é disputado por duas equipes. O mediador apresenta uma pergunta para uma
 ## 4. Comportamento eletrônico previsto
 
 - O botão da Equipe Azul sinaliza prioridade para a equipe azul.
-- O botão da Equipe Vermelha sinaliza prioridade para a equipe vermelha.
+- O botão da Equipe Verde sinaliza prioridade para a equipe verde.
 - O LED da equipe selecionada acende.
 - O buzzer emite aviso sonoro ao pressionar botão válido.
 - O botão de reset do mediador libera a próxima rodada.
