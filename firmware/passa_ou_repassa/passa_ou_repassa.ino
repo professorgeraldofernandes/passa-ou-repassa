@@ -20,9 +20,10 @@ constexpr uint8_t PINO_BOTAO_AZUL = 22;
 constexpr uint8_t PINO_BOTAO_VERDE = 23;
 constexpr uint8_t PINO_BOTAO_RESET = 24;
 
-constexpr uint8_t PINO_CHAVE_PONTUACAO_AV = 25;
+constexpr uint8_t PINO_CHAVE_PONTUACAO_A = 25;
 constexpr uint8_t PINO_BOTAO_MAIS_PONTOS = 26;
 constexpr uint8_t PINO_BOTAO_MENOS_PONTOS = 27;
+constexpr uint8_t PINO_CHAVE_PONTUACAO_V = 28;
 
 constexpr uint8_t PINO_LED_AZUL = 30;
 constexpr uint8_t PINO_LED_VERDE = 31;
@@ -77,6 +78,7 @@ void atualizarPontuacao();
 void alterarPontuacao(int variacao);
 EquipeSelecionada lerEquipeSelecionadaParaPontuacao();
 void exibirPontuacaoSerial();
+void exibirErroChavePontuacao();
 
 // =========================
 // Setup
@@ -108,7 +110,8 @@ void configurarPinos() {
   pinMode(PINO_BOTAO_VERDE, INPUT_PULLUP);
   pinMode(PINO_BOTAO_RESET, INPUT_PULLUP);
 
-  pinMode(PINO_CHAVE_PONTUACAO_AV, INPUT_PULLUP);
+  pinMode(PINO_CHAVE_PONTUACAO_A, INPUT_PULLUP);
+  pinMode(PINO_CHAVE_PONTUACAO_V, INPUT_PULLUP);
   pinMode(PINO_BOTAO_MAIS_PONTOS, INPUT_PULLUP);
   pinMode(PINO_BOTAO_MENOS_PONTOS, INPUT_PULLUP);
 
@@ -172,6 +175,10 @@ void alterarPontuacao(int variacao) {
   } else if (equipePontuacao == EquipeSelecionada::Verde) {
     pontuacaoVerde += variacao;
     pontuacaoVerde = constrain(pontuacaoVerde, PONTUACAO_MINIMA, PONTUACAO_MAXIMA);
+  } else {
+    exibirErroChavePontuacao();
+    sinalSonoro();
+    return;
   }
 
   sinalSonoro();
@@ -180,11 +187,23 @@ void alterarPontuacao(int variacao) {
 
 EquipeSelecionada lerEquipeSelecionadaParaPontuacao() {
   // Com INPUT_PULLUP:
-  // LOW  = posição A, Equipe Azul
-  // HIGH = posição V, Equipe Verde
-  return digitalRead(PINO_CHAVE_PONTUACAO_AV) == LOW
-           ? EquipeSelecionada::Azul
-           : EquipeSelecionada::Verde;
+  // LOW  = contato acionado
+  // HIGH = contato não acionado
+  const bool chaveAAtiva = digitalRead(PINO_CHAVE_PONTUACAO_A) == LOW;
+  const bool chaveVAtiva = digitalRead(PINO_CHAVE_PONTUACAO_V) == LOW;
+
+  if (chaveAAtiva && !chaveVAtiva) {
+    return EquipeSelecionada::Azul;
+  }
+
+  if (!chaveAAtiva && chaveVAtiva) {
+    return EquipeSelecionada::Verde;
+  }
+
+  // Estado inválido:
+  // - Nenhuma posição ativa
+  // - Duas posições ativas simultaneamente
+  return EquipeSelecionada::Nenhuma;
 }
 
 // =========================
@@ -258,4 +277,8 @@ void exibirPontuacaoSerial() {
   Serial.print(pontuacaoAzul);
   Serial.print(" | Pontuacao Verde: ");
   Serial.println(pontuacaoVerde);
+}
+
+void exibirErroChavePontuacao() {
+  Serial.println("Erro: chave seletora A/V em estado invalido. Verifique a posicao ou a ligacao dos contatos.");
 }
