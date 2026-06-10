@@ -5,10 +5,10 @@
 | Função | Pino Arduino Mega | Tipo | Observação |
 |---|---:|---|---|
 | Botão Equipe Azul | 22 | Entrada digital | Usar `INPUT_PULLUP` |
-| Botão Equipe Vermelha | 23 | Entrada digital | Usar `INPUT_PULLUP` |
+| Botão Equipe Verde | 23 | Entrada digital | Usar `INPUT_PULLUP` |
 | Botão Reset Rodada | 24 | Entrada digital | Usar `INPUT_PULLUP` |
 | LED Equipe Azul | 30 | Saída digital | Usar resistor limitador |
-| LED Equipe Vermelha | 31 | Saída digital | Usar resistor limitador |
+| LED Equipe Verde | 31 | Saída digital | Usar resistor limitador |
 | LED Sistema Pronto | 32 | Saída digital | Indicação de sistema liberado |
 | Buzzer | 8 | Saída digital/PWM | Buzzer passivo ou ativo |
 
