@@ -1,260 +1,392 @@
 /*
   Projeto: Passa ou Repassa
-  Sketch: Teste de Conexoes
+  Sketch: teste_conexoes.ino
   Plataforma: Arduino Mega 2560
 
   Objetivo:
-  Testar as entradas, saidas e dispositivos I2C ja mapeados no projeto usando:
-  - Monitor Serial
-  - Display LCD I2C 20x4
-  - Display 12864B V2 com modulo I2C
+  - Detectar botoes/chaves pressionados.
+  - Mostrar eventos e status no Monitor Serial.
+  - Mostrar status no LCD I2C 20x4.
+  - Escanear o barramento I2C para validar os displays conectados.
 
-  Bibliotecas necessarias:
+  Ligacao recomendada dos botoes/chaves:
+  - Um terminal do botao no pino digital do Arduino.
+  - Outro terminal do botao no GND.
+  - O codigo usa INPUT_PULLUP, portanto:
+    SOLTO       = HIGH
+    PRESSIONADO = LOW
+
+  Bibliotecas:
   - Wire
   - LiquidCrystal_I2C
-
-  Observacao importante:
-  O LCD 20x4 e o Display 12864B V2 devem compartilhar o mesmo barramento I2C:
-  - SDA = pino 20 do Arduino Mega 2560
-  - SCL = pino 21 do Arduino Mega 2560
-
-  Para que dois dispositivos I2C funcionem no mesmo barramento, eles precisam ter
-  enderecos I2C diferentes. Caso os dois estejam no mesmo endereco, havera conflito.
 */
 
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
-// =========================
-// Configuracao dos enderecos I2C
-// =========================
+// =====================================================
+// Configuracao do LCD I2C 20x4
+// =====================================================
 
-// Enderecos comuns para LCD I2C 20x4: 0x27 ou 0x3F.
-// Ajuste manualmente se o scanner indicar outro endereco.
-constexpr uint8_t ENDERECO_LCD20X4_PREFERENCIAL = 0x27;
-
-// Ajuste conforme o endereco encontrado pelo scanner I2C.
-// Muitos modulos I2C 12864 podem aparecer como 0x3C, 0x3D, 0x3F ou outro endereco.
-constexpr uint8_t ENDERECO_DISPLAY_12864_PREFERENCIAL = 0x3F;
-
-// =========================
-// Pinos das entradas
-// =========================
-
-constexpr uint8_t PINO_BOTAO_AZUL = 22;
-constexpr uint8_t PINO_BOTAO_VERDE = 23;
-constexpr uint8_t PINO_BOTAO_RESET = 24;
-
-constexpr uint8_t PINO_CHAVE_PONTUACAO_A = 25;
-constexpr uint8_t PINO_BOTAO_MAIS_PONTOS = 26;
-constexpr uint8_t PINO_BOTAO_MENOS_PONTOS = 27;
-constexpr uint8_t PINO_CHAVE_PONTUACAO_V = 28;
-
-// =========================
-// Pinos das saidas
-// =========================
-
-constexpr uint8_t PINO_LED_AZUL = 30;
-constexpr uint8_t PINO_LED_VERDE = 31;
-constexpr uint8_t PINO_LED_PRONTO = 32;
-constexpr uint8_t PINO_BUZZER = 8;
-
-// =========================
-// Barramento I2C - Arduino Mega 2560
-// =========================
-
-constexpr uint8_t PINO_I2C_SDA = 20;
-constexpr uint8_t PINO_I2C_SCL = 21;
-
-// =========================
-// Display LCD I2C 20x4
-// =========================
+constexpr uint8_t ENDERECO_LCD_PREFERENCIAL = 0x27;
+constexpr uint8_t ENDERECO_LCD_ALTERNATIVO  = 0x3F;
+constexpr uint8_t LCD_COLUNAS = 20;
+constexpr uint8_t LCD_LINHAS  = 4;
 
 LiquidCrystal_I2C *lcd20x4 = NULL;
 uint8_t enderecoLCD20x4 = 0;
-uint8_t enderecoDisplay12864 = 0;
 
-// =========================
-// Configuracoes gerais
-// =========================
+// =====================================================
+// Pinos das entradas - Arduino Mega 2560
+// Ajuste aqui se alterar a fiacao.
+// =====================================================
 
-constexpr unsigned long INTERVALO_ATUALIZACAO_MS = 500;
-constexpr unsigned int FREQUENCIA_BUZZER_HZ = 1800;
-constexpr unsigned long TEMPO_BUZZER_MS = 80;
-constexpr uint8_t MAX_DISPOSITIVOS_I2C = 12;
+constexpr uint8_t PINO_BOTAO_AZUL         = 22;
+constexpr uint8_t PINO_BOTAO_VERDE        = 23;
+constexpr uint8_t PINO_BOTAO_RESET        = 24;
+constexpr uint8_t PINO_CHAVE_PONTUACAO_A  = 25;
+constexpr uint8_t PINO_BOTAO_MAIS_PONTOS  = 26;
+constexpr uint8_t PINO_BOTAO_MENOS_PONTOS = 27;
+constexpr uint8_t PINO_CHAVE_PONTUACAO_V  = 28;
 
-unsigned long ultimaAtualizacao = 0;
+// =====================================================
+// Saidas auxiliares de teste
+// =====================================================
+
+constexpr uint8_t PINO_LED_AZUL  = 30;
+constexpr uint8_t PINO_LED_VERDE = 31;
+constexpr uint8_t PINO_LED_OK    = 32;
+constexpr uint8_t PINO_BUZZER    = 8;
+
+// =====================================================
+// Parametros gerais
+// =====================================================
+
+constexpr unsigned long TEMPO_DEBOUNCE_MS          = 45;
+constexpr unsigned long INTERVALO_SERIAL_STATUS_MS = 1000;
+constexpr unsigned long INTERVALO_LCD_MS           = 150;
+constexpr unsigned int  FREQUENCIA_BEEP_HZ         = 1800;
+constexpr unsigned long DURACAO_BEEP_MS            = 60;
+constexpr uint8_t       MAX_DISPOSITIVOS_I2C       = 12;
+
+// =====================================================
+// Estruturas
+// =====================================================
+
+struct EntradaDigital {
+  const char *nome;
+  const char *sigla;
+  uint8_t pino;
+  bool leituraInstavel;
+  bool pressionado;
+  unsigned long instanteMudanca;
+};
+
+EntradaDigital entradas[] = {
+  {"BOTAO AZUL",         "Az", PINO_BOTAO_AZUL,         false, false, 0},
+  {"BOTAO VERDE",        "Vd", PINO_BOTAO_VERDE,        false, false, 0},
+  {"BOTAO RESET",        "Rs", PINO_BOTAO_RESET,        false, false, 0},
+  {"CHAVE PONTUACAO A",  "A",  PINO_CHAVE_PONTUACAO_A,  false, false, 0},
+  {"BOTAO + PONTOS",     "+",  PINO_BOTAO_MAIS_PONTOS,  false, false, 0},
+  {"BOTAO - PONTOS",     "-",  PINO_BOTAO_MENOS_PONTOS, false, false, 0},
+  {"CHAVE PONTUACAO V",  "V",  PINO_CHAVE_PONTUACAO_V,  false, false, 0}
+};
+
+const uint8_t TOTAL_ENTRADAS = sizeof(entradas) / sizeof(entradas[0]);
+
 uint8_t dispositivosI2C[MAX_DISPOSITIVOS_I2C];
 uint8_t totalDispositivosI2C = 0;
 
-// =========================
-// Estruturas auxiliares
-// =========================
+unsigned long ultimaAtualizacaoSerial = 0;
+unsigned long ultimaAtualizacaoLCD = 0;
 
-struct EstadoEntradas {
-  bool botaoAzul;
-  bool botaoVerde;
-  bool botaoReset;
-  bool chaveA;
-  bool chaveV;
-  bool botaoMais;
-  bool botaoMenos;
-};
+char ultimoAcionamento[17] = "Nenhum";
 
-enum class EstadoChaveAV : uint8_t {
-  Azul,
-  Verde,
-  Nenhuma,
-  Erro
-};
-
-EstadoEntradas entradas;
-
-// =========================
+// =====================================================
 // Prototipos
-// =========================
+// =====================================================
 
 void configurarPinos();
-void testarSaidasIniciais();
-void inicializarDispositivosI2C();
-void inicializarLCD20x4();
-void atualizarEntradas();
-void atualizarSaidasDeTeste();
-void atualizarMonitorSerial();
-void atualizarLCD20x4();
-void escreverLinhaLCD(uint8_t linha, const String &texto);
-bool entradaAtiva(uint8_t pino);
+void inicializarEntradas();
 void escanearBarramentoI2C();
 bool dispositivoI2CResponde(uint8_t endereco);
-bool enderecoFoiEncontrado(uint8_t endereco);
-uint8_t detectarEnderecoLCD20x4();
-uint8_t detectarEnderecoDisplay12864();
-EstadoChaveAV lerEstadoChaveAV();
-const char *textoOnOff(bool estado);
-const char *textoChaveAV(EstadoChaveAV estado);
-void imprimirEnderecoI2C(uint8_t endereco);
+bool enderecoI2CEncontrado(uint8_t endereco);
+uint8_t selecionarEnderecoLCD();
+void inicializarLCD();
+void atualizarEntradas();
+void tratarMudancaEntrada(EntradaDigital &entrada, bool novoEstadoPressionado);
+void atualizarSaidasIndicadoras();
+void atualizarMonitorSerial(bool forcarImpressao);
+void atualizarLCD();
+void escreverLinhaLCD(uint8_t linha, const char *texto);
+void imprimirCabecalhoSerial();
+void imprimirResumoI2C();
+void imprimirEventoEntrada(const EntradaDigital &entrada, bool pressionado);
+void copiarUltimoAcionamento(const char *texto);
 void beepCurto();
+bool lerPressionado(uint8_t pino);
+const char *textoEstado(bool pressionado);
+const char *textoCurto(bool pressionado);
+uint8_t contarEntradasPressionadas();
 
-// =========================
+// =====================================================
 // Setup
-// =========================
+// =====================================================
 
 void setup() {
   Serial.begin(9600);
   delay(300);
 
-  Serial.println(F("========================================"));
-  Serial.println(F("Passa ou Repassa - Teste de Conexoes"));
-  Serial.println(F("Arduino Mega 2560"));
-  Serial.println(F("Displays no mesmo barramento I2C"));
-  Serial.println(F("SDA=20 | SCL=21"));
-  Serial.println(F("========================================"));
-
+  imprimirCabecalhoSerial();
   configurarPinos();
+  inicializarEntradas();
+
   Wire.begin();
+  escanearBarramentoI2C();
+  enderecoLCD20x4 = selecionarEnderecoLCD();
+  inicializarLCD();
+  imprimirResumoI2C();
 
-  inicializarDispositivosI2C();
-  inicializarLCD20x4();
-  testarSaidasIniciais();
+  Serial.println(F("Sistema pronto. Pressione os botoes para testar as conexoes."));
+  Serial.println();
 
-  Serial.println(F("Sistema de teste iniciado."));
-  Serial.println(F("Acione cada botao/chave e confira o Serial e o LCD 20x4."));
-  Serial.println(F("O Display 12864B V2 sera validado como dispositivo I2C no barramento."));
+  atualizarMonitorSerial(true);
+  atualizarLCD();
 }
 
-// =========================
+// =====================================================
 // Loop principal
-// =========================
+// =====================================================
 
 void loop() {
   atualizarEntradas();
-  atualizarSaidasDeTeste();
+  atualizarSaidasIndicadoras();
 
   const unsigned long agora = millis();
 
-  if (agora - ultimaAtualizacao >= INTERVALO_ATUALIZACAO_MS) {
-    ultimaAtualizacao = agora;
+  if (agora - ultimaAtualizacaoSerial >= INTERVALO_SERIAL_STATUS_MS) {
+    ultimaAtualizacaoSerial = agora;
+    atualizarMonitorSerial(false);
+  }
 
-    atualizarMonitorSerial();
-    atualizarLCD20x4();
+  if (agora - ultimaAtualizacaoLCD >= INTERVALO_LCD_MS) {
+    ultimaAtualizacaoLCD = agora;
+    atualizarLCD();
   }
 }
 
-// =========================
-// Configuracao dos pinos
-// =========================
+// =====================================================
+// Configuracao
+// =====================================================
 
 void configurarPinos() {
-  pinMode(PINO_BOTAO_AZUL, INPUT_PULLUP);
-  pinMode(PINO_BOTAO_VERDE, INPUT_PULLUP);
-  pinMode(PINO_BOTAO_RESET, INPUT_PULLUP);
-  pinMode(PINO_CHAVE_PONTUACAO_A, INPUT_PULLUP);
-  pinMode(PINO_CHAVE_PONTUACAO_V, INPUT_PULLUP);
-  pinMode(PINO_BOTAO_MAIS_PONTOS, INPUT_PULLUP);
-  pinMode(PINO_BOTAO_MENOS_PONTOS, INPUT_PULLUP);
+  for (uint8_t i = 0; i < TOTAL_ENTRADAS; i++) {
+    pinMode(entradas[i].pino, INPUT_PULLUP);
+  }
 
   pinMode(PINO_LED_AZUL, OUTPUT);
   pinMode(PINO_LED_VERDE, OUTPUT);
-  pinMode(PINO_LED_PRONTO, OUTPUT);
+  pinMode(PINO_LED_OK, OUTPUT);
   pinMode(PINO_BUZZER, OUTPUT);
 
   digitalWrite(PINO_LED_AZUL, LOW);
   digitalWrite(PINO_LED_VERDE, LOW);
-  digitalWrite(PINO_LED_PRONTO, LOW);
+  digitalWrite(PINO_LED_OK, LOW);
   noTone(PINO_BUZZER);
 }
 
-// =========================
-// Teste inicial das saidas
-// =========================
+void inicializarEntradas() {
+  const unsigned long agora = millis();
 
-void testarSaidasIniciais() {
-  Serial.println(F("Testando LEDs e buzzer..."));
-
-  digitalWrite(PINO_LED_AZUL, HIGH);
-  beepCurto();
-  delay(300);
-  digitalWrite(PINO_LED_AZUL, LOW);
-
-  digitalWrite(PINO_LED_VERDE, HIGH);
-  beepCurto();
-  delay(300);
-  digitalWrite(PINO_LED_VERDE, LOW);
-
-  digitalWrite(PINO_LED_PRONTO, HIGH);
-  beepCurto();
-  delay(300);
-  digitalWrite(PINO_LED_PRONTO, LOW);
+  for (uint8_t i = 0; i < TOTAL_ENTRADAS; i++) {
+    const bool estadoInicial = lerPressionado(entradas[i].pino);
+    entradas[i].leituraInstavel = estadoInicial;
+    entradas[i].pressionado = estadoInicial;
+    entradas[i].instanteMudanca = agora;
+  }
 }
 
-// =========================
-// Inicializacao I2C
-// =========================
+// =====================================================
+// Leitura com debounce
+// =====================================================
 
-void inicializarDispositivosI2C() {
-  escanearBarramentoI2C();
+void atualizarEntradas() {
+  const unsigned long agora = millis();
 
-  enderecoLCD20x4 = detectarEnderecoLCD20x4();
-  enderecoDisplay12864 = detectarEnderecoDisplay12864();
+  for (uint8_t i = 0; i < TOTAL_ENTRADAS; i++) {
+    EntradaDigital &entrada = entradas[i];
+    const bool leituraAtual = lerPressionado(entrada.pino);
 
-  if (totalDispositivosI2C == 0) {
-    Serial.println(F("Nenhum dispositivo I2C encontrado. Verifique SDA, SCL, VCC e GND."));
+    if (leituraAtual != entrada.leituraInstavel) {
+      entrada.leituraInstavel = leituraAtual;
+      entrada.instanteMudanca = agora;
+    }
+
+    if ((agora - entrada.instanteMudanca) >= TEMPO_DEBOUNCE_MS && leituraAtual != entrada.pressionado) {
+      tratarMudancaEntrada(entrada, leituraAtual);
+    }
+  }
+}
+
+void tratarMudancaEntrada(EntradaDigital &entrada, bool novoEstadoPressionado) {
+  entrada.pressionado = novoEstadoPressionado;
+
+  imprimirEventoEntrada(entrada, novoEstadoPressionado);
+
+  if (novoEstadoPressionado) {
+    copiarUltimoAcionamento(entrada.nome);
+    beepCurto();
+  }
+
+  atualizarMonitorSerial(true);
+  atualizarLCD();
+}
+
+bool lerPressionado(uint8_t pino) {
+  return digitalRead(pino) == LOW;
+}
+
+// =====================================================
+// Saidas indicadoras
+// =====================================================
+
+void atualizarSaidasIndicadoras() {
+  digitalWrite(PINO_LED_AZUL, entradas[0].pressionado ? HIGH : LOW);
+  digitalWrite(PINO_LED_VERDE, entradas[1].pressionado ? HIGH : LOW);
+  digitalWrite(PINO_LED_OK, contarEntradasPressionadas() > 0 ? HIGH : LOW);
+}
+
+// =====================================================
+// Monitor Serial
+// =====================================================
+
+void imprimirCabecalhoSerial() {
+  Serial.println(F("========================================"));
+  Serial.println(F("Passa ou Repassa - Teste de Conexoes"));
+  Serial.println(F("Arduino Mega 2560"));
+  Serial.println(F("Entradas com INPUT_PULLUP"));
+  Serial.println(F("Monitor Serial: 9600 bps"));
+  Serial.println(F("========================================"));
+}
+
+void atualizarMonitorSerial(bool forcarImpressao) {
+  (void)forcarImpressao;
+
+  Serial.println(F("---------------- STATUS ----------------"));
+
+  for (uint8_t i = 0; i < TOTAL_ENTRADAS; i++) {
+    Serial.print(entradas[i].nome);
+    Serial.print(F(" | D"));
+    Serial.print(entradas[i].pino);
+    Serial.print(F(": "));
+    Serial.println(textoEstado(entradas[i].pressionado));
+  }
+
+  Serial.print(F("Total pressionado: "));
+  Serial.println(contarEntradasPressionadas());
+
+  Serial.print(F("Ultimo acionamento: "));
+  Serial.println(ultimoAcionamento);
+
+  Serial.println();
+}
+
+void imprimirEventoEntrada(const EntradaDigital &entrada, bool pressionado) {
+  Serial.print(F("["));
+  Serial.print(millis());
+  Serial.print(F(" ms] "));
+  Serial.print(pressionado ? F("PRESSIONADO: ") : F("SOLTO: "));
+  Serial.print(entrada.nome);
+  Serial.print(F(" | Pino D"));
+  Serial.println(entrada.pino);
+}
+
+// =====================================================
+// LCD 20x4
+// =====================================================
+
+void inicializarLCD() {
+  if (enderecoLCD20x4 == 0) {
+    Serial.println(F("LCD 20x4 nao encontrado. O teste seguira apenas pelo Monitor Serial."));
     return;
   }
 
-  if (enderecoLCD20x4 == 0) {
-    Serial.println(F("LCD I2C 20x4 nao identificado automaticamente."));
-  }
+  lcd20x4 = new LiquidCrystal_I2C(enderecoLCD20x4, LCD_COLUNAS, LCD_LINHAS);
+  lcd20x4->init();
+  lcd20x4->backlight();
+  lcd20x4->clear();
 
-  if (enderecoDisplay12864 == 0) {
-    Serial.println(F("Display 12864B V2 I2C nao identificado automaticamente."));
-  }
+  escreverLinhaLCD(0, "Passa ou Repassa");
+  escreverLinhaLCD(1, "Teste Conexoes");
+  escreverLinhaLCD(2, "LCD I2C detectado");
 
-  if (enderecoLCD20x4 != 0 && enderecoDisplay12864 != 0 && enderecoLCD20x4 == enderecoDisplay12864) {
-    Serial.println(F("ATENCAO: LCD 20x4 e Display 12864 parecem estar no mesmo endereco I2C."));
-    Serial.println(F("Dois dispositivos I2C no mesmo barramento precisam de enderecos diferentes."));
-  }
+  char linha[21];
+  snprintf(linha, sizeof(linha), "Endereco: 0x%02X", enderecoLCD20x4);
+  escreverLinhaLCD(3, linha);
+
+  delay(1000);
 }
+
+void atualizarLCD() {
+  if (lcd20x4 == NULL) {
+    return;
+  }
+
+  char linha[21];
+
+  snprintf(linha, sizeof(linha), "Teste Conexoes %02u", contarEntradasPressionadas());
+  escreverLinhaLCD(0, linha);
+
+  snprintf(linha, sizeof(linha), "Ult:%-16s", ultimoAcionamento);
+  escreverLinhaLCD(1, linha);
+
+  snprintf(
+    linha,
+    sizeof(linha),
+    "Az:%s Vd:%s Rs:%s",
+    textoCurto(entradas[0].pressionado),
+    textoCurto(entradas[1].pressionado),
+    textoCurto(entradas[2].pressionado)
+  );
+  escreverLinhaLCD(2, linha);
+
+  snprintf(
+    linha,
+    sizeof(linha),
+    "A:%s V:%s +:%s -:%s",
+    textoCurto(entradas[3].pressionado),
+    textoCurto(entradas[6].pressionado),
+    textoCurto(entradas[4].pressionado),
+    textoCurto(entradas[5].pressionado)
+  );
+  escreverLinhaLCD(3, linha);
+}
+
+void escreverLinhaLCD(uint8_t linha, const char *texto) {
+  if (lcd20x4 == NULL || linha >= LCD_LINHAS) {
+    return;
+  }
+
+  char buffer[LCD_COLUNAS + 1];
+  uint8_t i = 0;
+
+  for (; i < LCD_COLUNAS && texto[i] != '\0'; i++) {
+    buffer[i] = texto[i];
+  }
+
+  for (; i < LCD_COLUNAS; i++) {
+    buffer[i] = ' ';
+  }
+
+  buffer[LCD_COLUNAS] = '\0';
+
+  lcd20x4->setCursor(0, linha);
+  lcd20x4->print(buffer);
+}
+
+// =====================================================
+// I2C
+// =====================================================
 
 void escanearBarramentoI2C() {
   totalDispositivosI2C = 0;
@@ -268,14 +400,20 @@ void escanearBarramentoI2C() {
         totalDispositivosI2C++;
       }
 
-      Serial.print(F("Dispositivo I2C encontrado em "));
-      imprimirEnderecoI2C(endereco);
-      Serial.println();
+      Serial.print(F("Dispositivo I2C encontrado em 0x"));
+      if (endereco < 16) {
+        Serial.print(F("0"));
+      }
+      Serial.println(endereco, HEX);
     }
   }
 
-  Serial.print(F("Total de dispositivos I2C encontrados: "));
-  Serial.println(totalDispositivosI2C);
+  if (totalDispositivosI2C == 0) {
+    Serial.println(F("Nenhum dispositivo I2C encontrado."));
+    Serial.println(F("Verifique SDA=20, SCL=21, VCC e GND."));
+  }
+
+  Serial.println();
 }
 
 bool dispositivoI2CResponde(uint8_t endereco) {
@@ -283,7 +421,7 @@ bool dispositivoI2CResponde(uint8_t endereco) {
   return Wire.endTransmission() == 0;
 }
 
-bool enderecoFoiEncontrado(uint8_t endereco) {
+bool enderecoI2CEncontrado(uint8_t endereco) {
   for (uint8_t i = 0; i < totalDispositivosI2C; i++) {
     if (dispositivosI2C[i] == endereco) {
       return true;
@@ -293,244 +431,68 @@ bool enderecoFoiEncontrado(uint8_t endereco) {
   return false;
 }
 
-uint8_t detectarEnderecoLCD20x4() {
-  if (enderecoFoiEncontrado(ENDERECO_LCD20X4_PREFERENCIAL)) {
-    return ENDERECO_LCD20X4_PREFERENCIAL;
+uint8_t selecionarEnderecoLCD() {
+  if (enderecoI2CEncontrado(ENDERECO_LCD_PREFERENCIAL)) {
+    return ENDERECO_LCD_PREFERENCIAL;
   }
 
-  const uint8_t enderecosComunsLCD[] = {0x27, 0x3F};
-
-  for (uint8_t i = 0; i < 2; i++) {
-    if (enderecoFoiEncontrado(enderecosComunsLCD[i])) {
-      return enderecosComunsLCD[i];
-    }
+  if (enderecoI2CEncontrado(ENDERECO_LCD_ALTERNATIVO)) {
+    return ENDERECO_LCD_ALTERNATIVO;
   }
 
   return 0;
 }
 
-uint8_t detectarEnderecoDisplay12864() {
-  if (enderecoFoiEncontrado(ENDERECO_DISPLAY_12864_PREFERENCIAL)) {
-    return ENDERECO_DISPLAY_12864_PREFERENCIAL;
-  }
+void imprimirResumoI2C() {
+  Serial.println(F("--------------- I2C --------------------"));
+  Serial.print(F("Dispositivos encontrados: "));
+  Serial.println(totalDispositivosI2C);
 
-  // Caso o endereco preferencial nao seja encontrado, assume o primeiro endereco
-  // I2C detectado que seja diferente do LCD 20x4.
-  for (uint8_t i = 0; i < totalDispositivosI2C; i++) {
-    if (dispositivosI2C[i] != enderecoLCD20x4) {
-      return dispositivosI2C[i];
-    }
-  }
-
-  return 0;
-}
-
-void inicializarLCD20x4() {
+  Serial.print(F("LCD 20x4: "));
   if (enderecoLCD20x4 == 0) {
-    Serial.println(F("LCD I2C 20x4 nao encontrado no barramento I2C."));
-    Serial.println(F("Verifique SDA=20, SCL=21, VCC, GND e endereco I2C."));
-    return;
-  }
-
-  lcd20x4 = new LiquidCrystal_I2C(enderecoLCD20x4, 20, 4);
-  lcd20x4->init();
-  lcd20x4->backlight();
-  lcd20x4->clear();
-
-  escreverLinhaLCD(0, "Passa ou Repassa");
-  escreverLinhaLCD(1, "Teste Conexoes");
-  escreverLinhaLCD(2, "LCD: 0x" + String(enderecoLCD20x4, HEX));
-
-  if (enderecoDisplay12864 == 0) {
-    escreverLinhaLCD(3, "12864: Nao detect.");
+    Serial.println(F("NAO IDENTIFICADO"));
   } else {
-    escreverLinhaLCD(3, "12864: 0x" + String(enderecoDisplay12864, HEX));
+    Serial.print(F("0x"));
+    if (enderecoLCD20x4 < 16) {
+      Serial.print(F("0"));
+    }
+    Serial.println(enderecoLCD20x4, HEX);
   }
 
-  Serial.print(F("LCD I2C 20x4 selecionado no endereco "));
-  imprimirEnderecoI2C(enderecoLCD20x4);
+  Serial.println(F("Observacao: outros displays I2C aparecem no scanner."));
+  Serial.println(F("Para escrever no 12864, confirme o controlador/biblioteca."));
   Serial.println();
 }
 
-// =========================
-// Atualizacao das entradas
-// =========================
+// =====================================================
+// Utilitarios
+// =====================================================
 
-void atualizarEntradas() {
-  entradas.botaoAzul = entradaAtiva(PINO_BOTAO_AZUL);
-  entradas.botaoVerde = entradaAtiva(PINO_BOTAO_VERDE);
-  entradas.botaoReset = entradaAtiva(PINO_BOTAO_RESET);
-  entradas.chaveA = entradaAtiva(PINO_CHAVE_PONTUACAO_A);
-  entradas.chaveV = entradaAtiva(PINO_CHAVE_PONTUACAO_V);
-  entradas.botaoMais = entradaAtiva(PINO_BOTAO_MAIS_PONTOS);
-  entradas.botaoMenos = entradaAtiva(PINO_BOTAO_MENOS_PONTOS);
+void copiarUltimoAcionamento(const char *texto) {
+  strncpy(ultimoAcionamento, texto, sizeof(ultimoAcionamento) - 1);
+  ultimoAcionamento[sizeof(ultimoAcionamento) - 1] = '\0';
 }
-
-bool entradaAtiva(uint8_t pino) {
-  return digitalRead(pino) == LOW;
-}
-
-// =========================
-// Saidas dinamicas de teste
-// =========================
-
-void atualizarSaidasDeTeste() {
-  const EstadoChaveAV estadoChave = lerEstadoChaveAV();
-
-  digitalWrite(PINO_LED_AZUL, entradas.botaoAzul ? HIGH : LOW);
-  digitalWrite(PINO_LED_VERDE, entradas.botaoVerde ? HIGH : LOW);
-
-  const bool chaveValida = estadoChave == EstadoChaveAV::Azul || estadoChave == EstadoChaveAV::Verde;
-  digitalWrite(PINO_LED_PRONTO, chaveValida ? HIGH : LOW);
-
-  if (entradas.botaoMais || entradas.botaoMenos) {
-    tone(PINO_BUZZER, FREQUENCIA_BUZZER_HZ);
-  } else {
-    noTone(PINO_BUZZER);
-  }
-}
-
-// =========================
-// Monitor Serial
-// =========================
-
-void atualizarMonitorSerial() {
-  const EstadoChaveAV estadoChave = lerEstadoChaveAV();
-
-  Serial.println(F("----------------------------------------"));
-  Serial.print(F("Botao Azul: "));
-  Serial.println(textoOnOff(entradas.botaoAzul));
-
-  Serial.print(F("Botao Verde: "));
-  Serial.println(textoOnOff(entradas.botaoVerde));
-
-  Serial.print(F("Botao Reset: "));
-  Serial.println(textoOnOff(entradas.botaoReset));
-
-  Serial.print(F("Chave A: "));
-  Serial.print(textoOnOff(entradas.chaveA));
-  Serial.print(F(" | Chave V: "));
-  Serial.print(textoOnOff(entradas.chaveV));
-  Serial.print(F(" | Selecao: "));
-  Serial.println(textoChaveAV(estadoChave));
-
-  Serial.print(F("Botao + Pontos: "));
-  Serial.println(textoOnOff(entradas.botaoMais));
-
-  Serial.print(F("Botao - Pontos: "));
-  Serial.println(textoOnOff(entradas.botaoMenos));
-
-  Serial.print(F("LCD 20x4 I2C: "));
-  if (enderecoLCD20x4 == 0) {
-    Serial.println(F("NAO ENCONTRADO"));
-  } else {
-    imprimirEnderecoI2C(enderecoLCD20x4);
-    Serial.println();
-  }
-
-  Serial.print(F("Display 12864B V2 I2C: "));
-  if (enderecoDisplay12864 == 0) {
-    Serial.println(F("NAO ENCONTRADO"));
-  } else {
-    imprimirEnderecoI2C(enderecoDisplay12864);
-    Serial.println(F(" - CONEXAO I2C OK"));
-  }
-}
-
-// =========================
-// LCD I2C 20x4
-// =========================
-
-void atualizarLCD20x4() {
-  if (lcd20x4 == NULL) {
-    return;
-  }
-
-  const EstadoChaveAV estadoChave = lerEstadoChaveAV();
-
-  escreverLinhaLCD(0, "Az:" + String(textoOnOff(entradas.botaoAzul)) + " Vd:" + String(textoOnOff(entradas.botaoVerde)) + " Rs:" + String(textoOnOff(entradas.botaoReset)));
-  escreverLinhaLCD(1, "+:" + String(textoOnOff(entradas.botaoMais)) + " -:" + String(textoOnOff(entradas.botaoMenos)) + " Ch:" + String(textoChaveAV(estadoChave)));
-  escreverLinhaLCD(2, "LCD20x4: 0x" + String(enderecoLCD20x4, HEX));
-
-  if (enderecoDisplay12864 == 0) {
-    escreverLinhaLCD(3, "12864 I2C: N/D");
-  } else {
-    escreverLinhaLCD(3, "12864 I2C: 0x" + String(enderecoDisplay12864, HEX));
-  }
-}
-
-void escreverLinhaLCD(uint8_t linha, const String &texto) {
-  if (lcd20x4 == NULL || linha > 3) {
-    return;
-  }
-
-  String textoAjustado = texto;
-
-  if (textoAjustado.length() > 20) {
-    textoAjustado = textoAjustado.substring(0, 20);
-  }
-
-  while (textoAjustado.length() < 20) {
-    textoAjustado += ' ';
-  }
-
-  lcd20x4->setCursor(0, linha);
-  lcd20x4->print(textoAjustado);
-}
-
-// =========================
-// Tratamento da chave A/V
-// =========================
-
-EstadoChaveAV lerEstadoChaveAV() {
-  if (entradas.chaveA && !entradas.chaveV) {
-    return EstadoChaveAV::Azul;
-  }
-
-  if (!entradas.chaveA && entradas.chaveV) {
-    return EstadoChaveAV::Verde;
-  }
-
-  if (!entradas.chaveA && !entradas.chaveV) {
-    return EstadoChaveAV::Nenhuma;
-  }
-
-  return EstadoChaveAV::Erro;
-}
-
-const char *textoOnOff(bool estado) {
-  return estado ? "ON" : "OFF";
-}
-
-const char *textoChaveAV(EstadoChaveAV estado) {
-  switch (estado) {
-    case EstadoChaveAV::Azul:
-      return "A/Azul";
-    case EstadoChaveAV::Verde:
-      return "V/Verde";
-    case EstadoChaveAV::Nenhuma:
-      return "Nenhuma";
-    case EstadoChaveAV::Erro:
-      return "Erro";
-    default:
-      return "Indef.";
-  }
-}
-
-void imprimirEnderecoI2C(uint8_t endereco) {
-  Serial.print(F("0x"));
-  if (endereco < 16) {
-    Serial.print(F("0"));
-  }
-  Serial.print(endereco, HEX);
-}
-
-// =========================
-// Buzzer
-// =========================
 
 void beepCurto() {
-  tone(PINO_BUZZER, FREQUENCIA_BUZZER_HZ, TEMPO_BUZZER_MS);
-  delay(TEMPO_BUZZER_MS + 40);
-  noTone(PINO_BUZZER);
+  tone(PINO_BUZZER, FREQUENCIA_BEEP_HZ, DURACAO_BEEP_MS);
+}
+
+const char *textoEstado(bool pressionado) {
+  return pressionado ? "PRESSIONADO" : "SOLTO";
+}
+
+const char *textoCurto(bool pressionado) {
+  return pressionado ? "ON" : "--";
+}
+
+uint8_t contarEntradasPressionadas() {
+  uint8_t total = 0;
+
+  for (uint8_t i = 0; i < TOTAL_ENTRADAS; i++) {
+    if (entradas[i].pressionado) {
+      total++;
+    }
+  }
+
+  return total;
 }
