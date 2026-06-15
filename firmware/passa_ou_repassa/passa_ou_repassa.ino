@@ -1,7 +1,7 @@
 /*
   Projeto: Passa ou Repassa
   Arquivo: firmware/passa_ou_repassa/passa_ou_repassa.ino
-  Versão: 0.4.0
+  Versão: 0.5.0
   Plataforma: Arduino Mega 2560
   Linguagem: C++ / Arduino
   Display: LCD 20x4 I2C
@@ -9,15 +9,17 @@
   Descrição:
   Controle eletrônico do jogo Passa ou Repassa com duas equipes,
   travamento da primeira equipe que pressionar, sinalização por LEDs,
-  buzzer, reset de rodada, pontuação manual e placar no display LCD 20x4.
+  sirene 12 Vcc acionada por relé, buzzer auxiliar, reset de rodada,
+  pontuação manual e placar no display LCD 20x4.
 
-  Alterações da versão 0.4.0:
-  - Buzzer toca por 5 segundos quando a equipe Azul ou Verde pressiona o botão de resposta.
-  - Buzzer desliga automaticamente após o tempo de alerta da rodada.
+  Alterações da versão 0.5.0:
+  - Incluída sirene 12 Vcc acionada por relé no D10.
+  - A sirene substitui o buzzer no alerta principal de resposta da equipe.
+  - Ao pressionar Azul ou Verde, a sirene toca por 5 segundos e desliga automaticamente.
+  - O buzzer no D8 foi preservado para os demais alertas: inicialização, pontuação, erro, reset e alerta de zerar placar.
   - Reset pressionado por mais de 1 segundo ativa alerta intermitente no buzzer.
-  - Alerta de reset avisa que o placar será zerado se o botão permanecer pressionado até 5 segundos.
+  - Reset mantido por 5 segundos zera o placar.
   - Mantida a chave de pontuação Azul no D28 e Verde no D25.
-  - Mantido bloqueio de pontuação para evitar múltiplos pontos em um único clique.
 
   Autor: Geraldo Fernandes
 */
@@ -58,16 +60,20 @@ constexpr unsigned long RESET_ZERA_PLACAR_MS = 5000;
 // Bloqueio adicional para evitar que um único clique some/subtraia mais de um ponto.
 constexpr unsigned long BLOQUEIO_PONTUACAO_MS = 450;
 
-// Alerta sonoro quando uma equipe bate o botão para responder.
-constexpr unsigned long BUZZER_RODADA_MS = 5000;
-constexpr unsigned long BUZZER_RODADA_INTERVALO_MS = 160;
+// Tempo da sirene quando uma equipe bate o botão para responder.
+constexpr unsigned long SIRENE_RODADA_MS = 5000;
 
-// Alerta sonoro enquanto o reset está pressionado e próximo de zerar o placar.
+// Alerta sonoro do buzzer enquanto o reset está pressionado e próximo de zerar o placar.
 constexpr unsigned long BUZZER_RESET_INTERVALO_MS = 130;
 
 // true  = buzzer passivo, usa tone().
 // false = buzzer ativo 5 V, usa HIGH/LOW.
 constexpr bool BUZZER_PASSIVO = true;
+
+// Ajuste conforme o seu módulo relé:
+// false = relé liga com HIGH, comum em módulos simples/transistorizados.
+// true  = relé liga com LOW, comum em alguns módulos de relé optoacoplados.
+constexpr bool RELE_SIRENE_ATIVO_EM_NIVEL_BAIXO = false;
 
 // =====================================================
 // MAPEAMENTO DE PINOS - ARDUINO MEGA 2560
@@ -83,10 +89,11 @@ constexpr uint8_t PINO_BOTAO_MAIS_PONTOS = 26;      // D26
 constexpr uint8_t PINO_BOTAO_MENOS_PONTOS = 27;     // D27
 constexpr uint8_t PINO_CHAVE_PONTUACAO_VERDE = 25;  // D25
 
+constexpr uint8_t PINO_RELE_SIRENE = 10;            // D10 - relé da sirene 12 Vcc
 constexpr uint8_t PINO_LED_AZUL = 30;
 constexpr uint8_t PINO_LED_VERDE = 31;
 constexpr uint8_t PINO_LED_PRONTO = 32;
-constexpr uint8_t PINO_BUZZER = 8;                  // D8
+constexpr uint8_t PINO_BUZZER = 8;                  // D8 - buzzer auxiliar
 
 // LCD I2C no Arduino Mega 2560:
 // SDA = pino 20
@@ -105,8 +112,7 @@ enum Equipe : uint8_t {
 enum BuzzerModo : uint8_t {
   BUZZER_MODO_DESLIGADO = 0,
   BUZZER_MODO_SEQUENCIA = 1,
-  BUZZER_MODO_ALERTA_RODADA = 2,
-  BUZZER_MODO_ALERTA_RESET = 3
+  BUZZER_MODO_ALERTA_RESET = 2
 };
 
 struct NotaBuzzer {
@@ -130,8 +136,10 @@ uint8_t indiceNotaSequencia = 0;
 bool buzzerLigado = false;
 bool buzzerEmPausa = false;
 unsigned long proximaTrocaBuzzer = 0;
-unsigned long buzzerFimModo = 0;
 unsigned long ultimaAlternanciaBuzzer = 0;
+
+bool sireneAtiva = false;
+unsigned long sireneDesligaEm = 0;
 
 bool resetLongoExecutado = false;
 bool alertaResetAtivo = false;
@@ -141,7 +149,7 @@ char mensagemTemporaria[21] = "";
 unsigned long mensagemTemporariaAte = 0;
 
 // =====================================================
-// SONS CURTOS DO JOGO
+// SONS CURTOS DO BUZZER AUXILIAR
 // =====================================================
 
 const NotaBuzzer SOM_INICIALIZACAO[] = {
@@ -270,7 +278,44 @@ BotaoDebounce botaoMaisPontos;
 BotaoDebounce botaoMenosPontos;
 
 // =====================================================
-// FUNÇÕES DO BUZZER
+// FUNÇÕES DA SIRENE 12 Vcc VIA RELÉ
+// =====================================================
+
+void escreverReleSirene(bool ligar) {
+  if (RELE_SIRENE_ATIVO_EM_NIVEL_BAIXO) {
+    digitalWrite(PINO_RELE_SIRENE, ligar ? LOW : HIGH);
+  } else {
+    digitalWrite(PINO_RELE_SIRENE, ligar ? HIGH : LOW);
+  }
+}
+
+void iniciarSireneRodada() {
+  sireneAtiva = true;
+  sireneDesligaEm = millis() + SIRENE_RODADA_MS;
+  escreverReleSirene(true);
+
+  Serial.println(F("[SIRENE] Sirene acionada por 5 segundos."));
+}
+
+void pararSirene() {
+  sireneAtiva = false;
+  sireneDesligaEm = 0;
+  escreverReleSirene(false);
+}
+
+void atualizarSirene() {
+  if (!sireneAtiva) {
+    return;
+  }
+
+  if (millis() >= sireneDesligaEm) {
+    pararSirene();
+    Serial.println(F("[SIRENE] Sirene desligada automaticamente."));
+  }
+}
+
+// =====================================================
+// FUNÇÕES DO BUZZER AUXILIAR
 // =====================================================
 
 void buzzerOn(uint16_t frequenciaHz) {
@@ -301,7 +346,6 @@ void pararSom() {
   indiceNotaSequencia = 0;
   buzzerEmPausa = false;
   proximaTrocaBuzzer = 0;
-  buzzerFimModo = 0;
   ultimaAlternanciaBuzzer = 0;
 }
 
@@ -322,17 +366,9 @@ void iniciarSomSequencia(const NotaBuzzer* sequencia, uint8_t totalNotas) {
   proximaTrocaBuzzer = millis() + sequenciaAtual[indiceNotaSequencia].duracaoMs;
 }
 
-void iniciarAlertaRodadaCincoSegundos() {
-  pararSom();
-
-  buzzerModo = BUZZER_MODO_ALERTA_RODADA;
-  buzzerFimModo = millis() + BUZZER_RODADA_MS;
-  ultimaAlternanciaBuzzer = 0;
-  buzzerLigado = false;
-}
-
 void iniciarAlertaReset() {
   pararSom();
+  pararSirene();
 
   alertaResetAtivo = true;
   buzzerModo = BUZZER_MODO_ALERTA_RESET;
@@ -374,25 +410,6 @@ void atualizarSequenciaBuzzer() {
   proximaTrocaBuzzer = agora + sequenciaAtual[indiceNotaSequencia].duracaoMs;
 }
 
-void atualizarAlertaRodadaBuzzer() {
-  const unsigned long agora = millis();
-
-  if (agora >= buzzerFimModo) {
-    pararSom();
-    return;
-  }
-
-  if (agora - ultimaAlternanciaBuzzer >= BUZZER_RODADA_INTERVALO_MS) {
-    ultimaAlternanciaBuzzer = agora;
-
-    if (buzzerLigado) {
-      buzzerOff();
-    } else {
-      buzzerOn(1800);
-    }
-  }
-}
-
 void atualizarAlertaResetBuzzer() {
   const unsigned long agora = millis();
 
@@ -411,10 +428,6 @@ void atualizarBuzzer() {
   switch (buzzerModo) {
     case BUZZER_MODO_SEQUENCIA:
       atualizarSequenciaBuzzer();
-      break;
-
-    case BUZZER_MODO_ALERTA_RODADA:
-      atualizarAlertaRodadaBuzzer();
       break;
 
     case BUZZER_MODO_ALERTA_RESET:
@@ -559,6 +572,7 @@ void atualizarLedPronto() {
 void resetarRodada() {
   equipeTravada = EQUIPE_NENHUMA;
   alertaResetAtivo = false;
+  pararSirene();
   pararSom();
   atualizarSaidas();
   iniciarSomSequencia(SOM_RESET, sizeof(SOM_RESET) / sizeof(SOM_RESET[0]));
@@ -578,6 +592,7 @@ void zerarPlacar() {
 void zerarPlacarERodada() {
   equipeTravada = EQUIPE_NENHUMA;
   alertaResetAtivo = false;
+  pararSirene();
   pararSom();
   atualizarSaidas();
   zerarPlacar();
@@ -593,8 +608,8 @@ void travarRodada(Equipe equipe) {
   atualizarSaidas();
 
   // Alerta principal: indica que alguém bateu o botão para responder.
-  // O buzzer toca por 5 segundos e desliga automaticamente.
-  iniciarAlertaRodadaCincoSegundos();
+  // A sirene 12 Vcc aciona pelo relé no D10 por 5 segundos.
+  iniciarSireneRodada();
 
   solicitarAtualizacaoLCD();
 
@@ -818,11 +833,13 @@ void setup() {
   pinMode(PINO_CHAVE_PONTUACAO_AZUL, INPUT_PULLUP);
   pinMode(PINO_CHAVE_PONTUACAO_VERDE, INPUT_PULLUP);
 
+  pinMode(PINO_RELE_SIRENE, OUTPUT);
   pinMode(PINO_LED_AZUL, OUTPUT);
   pinMode(PINO_LED_VERDE, OUTPUT);
   pinMode(PINO_LED_PRONTO, OUTPUT);
   pinMode(PINO_BUZZER, OUTPUT);
 
+  pararSirene();
   digitalWrite(PINO_LED_AZUL, LOW);
   digitalWrite(PINO_LED_VERDE, LOW);
   digitalWrite(PINO_LED_PRONTO, LOW);
@@ -842,8 +859,8 @@ void setup() {
 
   imprimirLinhaLCD(0, "PASSA OU REPASSA");
   imprimirLinhaLCD(1, "Inicializando...");
-  imprimirLinhaLCD(2, "Mega 2560 + LCD");
-  imprimirLinhaLCD(3, "Buzzer D8 ativo");
+  imprimirLinhaLCD(2, "Sirene rele D10");
+  imprimirLinhaLCD(3, "Buzzer aux D8");
 
   delay(900);
 
@@ -863,6 +880,7 @@ void loop() {
   processarBotaoReset();
   processarSerial();
 
+  atualizarSirene();
   atualizarBuzzer();
   atualizarLedPronto();
 
